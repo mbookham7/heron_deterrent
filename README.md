@@ -1,8 +1,3 @@
-# ============================================================
-# FILE: README.md
-# ============================================================
-
-README = '''
 # Heron Deterrent Solution
 
 An edge AI-powered system to detect and deter herons from fish ponds using computer vision and audio deterrents.
