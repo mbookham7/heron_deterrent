@@ -1,0 +1,417 @@
+# ============================================================
+# FILE: ui/templates/index.html
+# ============================================================
+
+
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heron Deterrent System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .status-item {
+            background: #f0f0f0;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .status-item.online { background: #d4edda; color: #155724; }
+        .status-item.offline { background: #f8d7da; color: #721c24; }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+        
+        .video-container {
+            background: #000;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        
+        .video-container img {
+            width: 100%;
+            display: block;
+        }
+        
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #5568d3;
+        }
+        
+        button.danger {
+            background: #dc3545;
+        }
+        
+        button.danger:hover {
+            background: #c82333;
+        }
+        
+        .alert-list, .detection-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .alert-item, .detection-item {
+            padding: 10px;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 14px;
+        }
+        
+        .alert-item:last-child, .detection-item:last-child {
+            border-bottom: none;
+        }
+        
+        .alert-critical {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .alert-warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .timestamp {
+            color: #666;
+            font-size: 12px;
+        }
+        
+        .file-upload {
+            border: 2px dashed #667eea;
+            border-radius: 5px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        
+        .file-upload:hover {
+            background: #f0f0f0;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .label-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        .label-section input, .label-section select {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🦆 Heron Deterrent System</h1>
+            <div class="status" id="status">
+                <div class="status-item">Loading...</div>
+            </div>
+        </header>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>📹 Live Stream</h2>
+                <div class="video-container">
+                    <img id="live-stream" src="/api/live-stream" alt="Live camera feed">
+                </div>
+                <button onclick="triggerDeterrent()">🔊 Trigger Deterrent</button>
+            </div>
+            
+            <div class="card">
+                <h2>🚨 Recent Alerts</h2>
+                <div class="alert-list" id="alerts">
+                    <div class="alert-item">Loading alerts...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>🎯 Heron Detections</h2>
+                <div class="detection-list" id="heron-detections">
+                    <div class="detection-item">Loading...</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>❓ Unclassified Objects</h2>
+                <div class="detection-list" id="unclassified">
+                    <div class="detection-item">Loading...</div>
+                </div>
+                <div class="label-section">
+                    <h3>Label Selected Detection</h3>
+                    <input type="number" id="detection-id" placeholder="Detection ID">
+                    <select id="label-select">
+                        <option value="heron">Heron</option>
+                        <option value="cat">Cat</option>
+                        <option value="dog">Dog</option>
+                        <option value="bird">Other Bird</option>
+                        <option value="person">Person</option>
+                    </select>
+                    <button onclick="submitLabel()">Submit Label</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>📤 Test Video Upload</h2>
+            <div class="file-upload" onclick="document.getElementById('video-upload').click()">
+                <p>Click to upload test video (MP4)</p>
+                <input type="file" id="video-upload" accept="video/mp4" onchange="uploadVideo()">
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Refresh data every 5 seconds
+        setInterval(updateData, 5000);
+        updateData();
+        
+        async function updateData() {
+            await updateStatus();
+            await updateAlerts();
+            await updateDetections();
+            await updateUnclassified();
+        }
+        
+        async function updateStatus() {
+            try {
+                const response = await fetch('/api/system-status');
+                const data = await response.json();
+                
+                const statusDiv = document.getElementById('status');
+                statusDiv.innerHTML = `
+                    <div class="status-item ${data.status === 'online' ? 'online' : 'offline'}">
+                        System: ${data.status}
+                    </div>
+                    <div class="status-item ${data.camera_connected ? 'online' : 'offline'}">
+                        Camera: ${data.camera_connected ? 'Connected' : 'Disconnected'}
+                    </div>
+                    <div class="status-item">
+                        Active Hours: ${data.active_hours ? 'Yes' : 'No'}
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Error updating status:', error);
+            }
+        }
+        
+        async function updateAlerts() {
+            try {
+                const response = await fetch('/api/alerts');
+                const alerts = await response.json();
+                
+                const alertsDiv = document.getElementById('alerts');
+                if (alerts.length === 0) {
+                    alertsDiv.innerHTML = '<div class="alert-item">No alerts</div>';
+                } else {
+                    alertsDiv.innerHTML = alerts.map(alert => `
+                        <div class="alert-item alert-${alert.type.toLowerCase()}">
+                            <strong>${alert.type}</strong>: ${alert.message}
+                            <div class="timestamp">${new Date(alert.timestamp).toLocaleString()}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error updating alerts:', error);
+            }
+        }
+        
+        async function updateDetections() {
+            try {
+                const response = await fetch('/api/detections?label=heron&limit=20');
+                const detections = await response.json();
+                
+                const detectionsDiv = document.getElementById('heron-detections');
+                if (detections.length === 0) {
+                    detectionsDiv.innerHTML = '<div class="detection-item">No heron detections</div>';
+                } else {
+                    detectionsDiv.innerHTML = detections.map(det => `
+                        <div class="detection-item">
+                            <strong>Confidence:</strong> ${(det.confidence * 100).toFixed(1)}%
+                            <div class="timestamp">${new Date(det.timestamp).toLocaleString()}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error updating detections:', error);
+            }
+        }
+        
+        async function updateUnclassified() {
+            try {
+                const response = await fetch('/api/unclassified');
+                const detections = await response.json();
+                
+                const unclassifiedDiv = document.getElementById('unclassified');
+                if (detections.length === 0) {
+                    unclassifiedDiv.innerHTML = '<div class="detection-item">No unclassified objects</div>';
+                } else {
+                    unclassifiedDiv.innerHTML = detections.map(det => `
+                        <div class="detection-item">
+                            <strong>ID:</strong> ${det.id}
+                            <div class="timestamp">${new Date(det.timestamp).toLocaleString()}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error updating unclassified:', error);
+            }
+        }
+        
+        async function triggerDeterrent() {
+            try {
+                const response = await fetch('/api/trigger-deterrent', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    alert('Deterrent triggered!');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error triggering deterrent');
+            }
+        }
+        
+        async function submitLabel() {
+            const detectionId = document.getElementById('detection-id').value;
+            const label = document.getElementById('label-select').value;
+            
+            if (!detectionId) {
+                alert('Please enter a detection ID');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/label', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        detection_id: parseInt(detectionId),
+                        label: label,
+                        bboxes: []
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert('Label submitted successfully!');
+                    document.getElementById('detection-id').value = '';
+                    updateData();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error submitting label');
+            }
+        }
+        
+        async function uploadVideo() {
+            const fileInput = document.getElementById('video-upload');
+            const file = fileInput.files[0];
+            
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('video', file);
+            
+            try {
+                const response = await fetch('/api/upload-test-video', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert(`Video processed! Frames: ${data.frames_processed}`);
+                    updateData();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error uploading video');
+            }
+            
+            fileInput.value = '';
+        }
+    </script>
+</body>
+</html>
+'''
+
+# Save HTML template
+Path('ui/templates').mkdir(parents=True, exist_ok=True)
+with open('ui/templates/index.html', 'w') as f:
+    f.write(HTML_TEMPLATE)

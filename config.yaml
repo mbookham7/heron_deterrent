@@ -1,0 +1,50 @@
+# ============================================================
+# FILE: config.yaml
+# ============================================================
+
+motion:
+  sensitivity: 5000
+  cooldown_seconds: 10
+
+ai:
+  confidence_threshold: 0.6
+  model_path: "./models/heron_yolo.tflite"
+  use_edge_tpu: true
+
+alert:
+  sms_enabled: true
+  sms_throttle_minutes: 15
+  twilio_account_sid: ""
+  twilio_auth_token: ""
+  twilio_from_number: ""
+  twilio_to_number: ""
+
+audio:
+  volume: 80
+  sound_path: "./sounds/"
+
+storage:
+  retention_days: 365
+  media_path: "./media/"
+  db_path: "./data/heron.db"
+
+mqtt:
+  enabled: false
+  broker: "localhost"
+  port: 1883
+  topics:
+    detection: "heron/detection"
+    alert: "heron/alert"
+    unclassified: "heron/unclassified"
+    status: "heron/system/status"
+
+system:
+  active_hours:
+    start: "06:00"
+    end: "20:00"
+  camera_device_id: 0
+  frame_rate: 10
+  resolution:
+    width: 640
+    height: 480
+  running_on_raspberry_pi: false
