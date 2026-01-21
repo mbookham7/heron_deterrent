@@ -1,4 +1,4 @@
-'''#!/bin/bash
+#!/bin/bash
 
 echo "=== Heron Deterrent System Setup ==="
 echo ""
@@ -113,7 +113,6 @@ echo "5. Run: python main.py"
 echo ""
 echo "To start with web UI: START_WEB_UI=true python main.py"
 echo ""
-'''
 
 with open('setup.sh', 'w') as f:
     f.write(SETUP_SCRIPT)
