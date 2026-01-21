@@ -113,11 +113,3 @@ echo "5. Run: python main.py"
 echo ""
 echo "To start with web UI: START_WEB_UI=true python main.py"
 echo ""
-
-with open('setup.sh', 'w') as f:
-    f.write(SETUP_SCRIPT)
-
-# Make executable
-import os
-import stat
-os.chmod('setup.sh', os.stat('setup.sh').st_mode | stat.S_IEXEC)
