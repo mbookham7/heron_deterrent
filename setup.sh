@@ -20,14 +20,14 @@ sudo apt-get update
 # Install system dependencies
 echo ""
 echo "Installing system dependencies..."
-sudo apt-get install -y \\
-    python3-pip \\
-    python3-venv \\
-    python3-opencv \\
-    alsa-utils \\
-    v4l-utils \\
-    libportaudio2 \\
-    sqlite3 \\
+sudo apt-get install -y \
+    python3-pip \
+    python3-venv \
+    python3-opencv \
+    alsa-utils \
+    v4l-utils \
+    libportaudio2 \
+    sqlite3 \
     git
 
 # Create virtual environment
