@@ -1,4 +1,4 @@
-SETUP_SCRIPT = '''#!/bin/bash
+'''#!/bin/bash
 
 echo "=== Heron Deterrent System Setup ==="
 echo ""
