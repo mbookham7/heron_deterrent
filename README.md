@@ -44,10 +44,10 @@ pip install -r requirements.txt
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y \\
-    python3-opencv \\
-    alsa-utils \\
-    v4l-utils \\
+sudo apt-get install -y \
+    python3-opencv \
+    alsa-utils \
+    v4l-utils \
     libportaudio2
 ```
 
