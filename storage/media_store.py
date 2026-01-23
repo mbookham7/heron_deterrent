@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import logging
 
 logger = logging.getLogger(__name__)
