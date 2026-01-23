@@ -58,7 +58,7 @@ motion:
 
 ai:
   confidence_threshold: 0.6
-  model_path: "./models/heron_yolo.tflite"
+  model_path: "./models/best.tflite"
   use_edge_tpu: false
 
 alert:
