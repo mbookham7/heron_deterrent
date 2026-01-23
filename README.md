@@ -33,7 +33,7 @@ An edge AI-powered system to detect and deter herons from fish ponds using compu
 ### 1. Clone and Setup
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/mbookham7/heron_deterrent.git
 cd heron_deterrent
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\\Scripts\\activate
