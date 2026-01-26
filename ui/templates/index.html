@@ -1,9 +1,3 @@
-# ============================================================
-# FILE: ui/templates/index.html
-# ============================================================
-
-
-HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -409,9 +403,3 @@ HTML_TEMPLATE = '''
     </script>
 </body>
 </html>
-'''
-
-# Save HTML template
-Path('ui/templates').mkdir(parents=True, exist_ok=True)
-with open('ui/templates/index.html', 'w') as f:
-    f.write(HTML_TEMPLATE)
