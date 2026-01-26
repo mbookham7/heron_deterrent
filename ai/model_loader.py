@@ -18,8 +18,9 @@ class ModelLoader:
         self._load_model()
     
     def _load_model(self):
-        if not self.model_path.exists():
-            raise FileNotFoundError(f"Model not found: {self.model_path}")
+        if not self.model_path.exists() or str(self.model_path) == "":
+            logger.warning(f"Model not found: {self.model_path}. Running without AI detection.")
+            return
         
         try:
             if self.use_edge_tpu:
@@ -55,8 +56,7 @@ class ModelLoader:
             logger.info(f"Model input shape: {self.input_details[0]['shape']}")
             
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise
+            logger.error(f"Failed to load model: {e}. Continuing without AI detection.")
     
     def get_interpreter(self):
         return self.interpreter
