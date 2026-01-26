@@ -130,8 +130,12 @@ def upload_test_video():
         
         video_file = request.files['video']
         
-        # Save temporarily
-        temp_path = Path('./temp_upload.mp4')
+        # Determine file extension
+        filename = video_file.filename or 'upload.mp4'
+        file_ext = Path(filename).suffix or '.mp4'
+        
+        # Save temporarily with original extension
+        temp_path = Path(f'./temp_upload{file_ext}')
         video_file.save(temp_path)
         
         # Process video
