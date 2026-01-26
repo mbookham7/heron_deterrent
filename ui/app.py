@@ -141,12 +141,14 @@ def upload_test_video():
         # Process video
         cap = cv2.VideoCapture(str(temp_path))
         frames = []
+        frame_count = 0
         
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             frames.append(frame)
+            frame_count += 1
         
         cap.release()
         temp_path.unlink()  # Delete temp file
@@ -154,13 +156,36 @@ def upload_test_video():
         if frames:
             # Process as detection event
             system.process_detection_event(frames)
-            return jsonify({'success': True, 'frames_processed': len(frames)})
+            
+            # Get recent detections
+            detections = system.database.get_detections(limit=10)
+            heron_detections = [d for d in detections if d.get('label') == 'heron']
+            
+            return jsonify({
+                'success': True, 
+                'frames_processed': frame_count,
+                'herons_detected': len(heron_detections),
+                'detections': heron_detections
+            })
         else:
             return jsonify({'success': False, 'error': 'No frames extracted'})
         
     except Exception as e:
         logger.error(f"Error processing uploaded video: {e}")
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/heron-detections')
+def get_heron_detections():
+    if not system:
+        return jsonify([])
+    
+    try:
+        limit = int(request.args.get('limit', 50))
+        detections = system.database.get_detections(label='heron', limit=limit)
+        return jsonify(detections)
+    except Exception as e:
+        logger.error(f"Error getting heron detections: {e}")
+        return jsonify([])
 
 @app.route('/api/system-status')
 def system_status():

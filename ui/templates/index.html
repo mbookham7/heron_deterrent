@@ -225,6 +225,24 @@
                 <p>Click to upload test video (MP4 or MOV)</p>
                 <input type="file" id="video-upload" accept="video/mp4,video/quicktime,.mp4,.mov" onchange="uploadVideo()">
             </div>
+            <div id="upload-progress" style="display:none; margin-top:15px;">
+                <p id="progress-text"></p>
+                <div style="background: #e0e0e0; border-radius: 5px; height: 20px; overflow: hidden;">
+                    <div id="progress-bar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                </div>
+            </div>
+            <div id="upload-results" style="display:none; margin-top:15px;">
+                <h3>✅ Upload Complete</h3>
+                <p id="results-text"></p>
+                <div id="heron-results" style="margin-top:10px;"></div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🦅 Detected Herons Gallery</h2>
+            <div id="herons-gallery" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
+                <p style="grid-column: 1/-1; color: #666;">No herons detected yet</p>
+            </div>
         </div>
     </div>
     
@@ -238,6 +256,7 @@
             await updateAlerts();
             await updateDetections();
             await updateUnclassified();
+            await updateHeronGallery();
         }
         
         async function updateStatus() {
@@ -378,27 +397,99 @@
             
             if (!file) return;
             
+            // Show progress
+            document.getElementById('upload-progress').style.display = 'block';
+            document.getElementById('upload-results').style.display = 'none';
+            document.getElementById('progress-text').textContent = 'Uploading and processing video...';
+            document.getElementById('progress-bar').style.width = '0%';
+            
             const formData = new FormData();
             formData.append('video', file);
             
             try {
+                // Simulate progress
+                let progress = 0;
+                const progressInterval = setInterval(() => {
+                    if (progress < 90) {
+                        progress += Math.random() * 30;
+                        document.getElementById('progress-bar').style.width = Math.min(progress, 90) + '%';
+                    }
+                }, 300);
+                
                 const response = await fetch('/api/upload-test-video', {
                     method: 'POST',
                     body: formData
                 });
                 
+                clearInterval(progressInterval);
                 const data = await response.json();
+                
                 if (data.success) {
-                    alert(`Video processed! Frames: ${data.frames_processed}`);
-                    updateData();
+                    // Complete progress
+                    document.getElementById('progress-bar').style.width = '100%';
+                    document.getElementById('progress-text').textContent = 'Processing complete!';
+                    
+                    // Show results
+                    setTimeout(() => {
+                        document.getElementById('upload-progress').style.display = 'none';
+                        document.getElementById('upload-results').style.display = 'block';
+                        document.getElementById('results-text').textContent = 
+                            `✓ Processed ${data.frames_processed} frames\n✓ Detected ${data.herons_detected} herons`;
+                        
+                        // Show detected herons
+                        if (data.detections && data.detections.length > 0) {
+                            document.getElementById('heron-results').innerHTML = 
+                                `<strong>Recent Detections:</strong> ${data.detections.length} heron(s) found`;
+                        }
+                        
+                        updateData();
+                    }, 500);
                 } else {
                     alert('Error: ' + data.error);
+                    document.getElementById('upload-progress').style.display = 'none';
                 }
             } catch (error) {
                 alert('Error uploading video');
+                document.getElementById('upload-progress').style.display = 'none';
             }
             
             fileInput.value = '';
+        }
+        
+        async function updateHeronGallery() {
+            try {
+                const response = await fetch('/api/heron-detections?limit=20');
+                const detections = await response.json();
+                
+                const gallery = document.getElementById('herons-gallery');
+                
+                if (!detections || detections.length === 0) {
+                    gallery.innerHTML = '<p style="grid-column: 1/-1; color: #666;">No herons detected yet</p>';
+                    return;
+                }
+                
+                gallery.innerHTML = detections.map((detection, index) => `
+                    <div style="background: #f5f5f5; border-radius: 8px; padding: 10px; text-align: center;">
+                        <div style="background: #fff; border-radius: 5px; padding: 8px; margin-bottom: 8px; min-height: 150px; display: flex; align-items: center; justify-content: center;">
+                            ${detection.video_path ? 
+                                `<video width="100%" height="auto" controls style="border-radius: 5px;">
+                                    <source src="/api/media/${detection.video_path}" type="video/mp4">
+                                    Your browser does not support the video tag.
+                                </video>` 
+                                : '<p style="color: #999;">No preview available</p>'
+                            }
+                        </div>
+                        <p style="margin: 5px 0; font-size: 12px;">
+                            <strong>Confidence:</strong> ${(detection.confidence * 100).toFixed(1)}%
+                        </p>
+                        <p style="margin: 5px 0; font-size: 11px; color: #666;">
+                            ${new Date(detection.timestamp).toLocaleString()}
+                        </p>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading heron gallery:', error);
+            }
         }
     </script>
 </body>
