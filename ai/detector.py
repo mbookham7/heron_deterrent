@@ -19,7 +19,7 @@ class Detection:
     def __repr__(self):
         return f"Detection(label={self.label}, confidence={self.confidence:.2f})"
 
-class YOLOv8Detector:
+class ObjectDetector:
     """
     Enhanced YOLO detector for TFLite models with proper output parsing
     Handles YOLOv5 and YOLOv8 TFLite output formats
