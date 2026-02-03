@@ -109,6 +109,11 @@ class ObjectDetector:
             
             logger.debug(f"Output shape: {output.shape}, dtype: {output.dtype}")
             
+            # Handle 1D output
+            if len(output.shape) == 1:
+                logger.debug(f"1D output detected with shape {output.shape}, cannot parse YOLOv8 format")
+                return detections
+            
             # Remove batch dimension
             if output.shape[0] == 1:
                 output = output[0]
@@ -181,9 +186,18 @@ class ObjectDetector:
             
             logger.debug(f"Output shape: {output.shape}")
             
-            # Remove batch dimension
-            if output.shape[0] == 1:
-                output = output[0]
+            # Handle shape variations
+            # Skip batch dimension if present and ensure we have 2D output
+            while len(output.shape) > 2:
+                if output.shape[0] == 1:
+                    output = output[0]
+                else:
+                    break
+            
+            # If we somehow still have 1D, reshape it
+            if len(output.shape) == 1:
+                logger.debug(f"1D output detected, cannot parse YOLOv5 format")
+                return detections
             
             # output is now [num_boxes, 85]
             for i in range(output.shape[0]):
@@ -291,7 +305,12 @@ class ObjectDetector:
             # Check output shape to determine format
             main_output = outputs[0]
             
-            if len(main_output.shape) >= 2:
+            logger.debug(f"Main output shape: {main_output.shape}")
+            
+            if len(main_output.shape) == 1:
+                logger.warning("Output is 1D - cannot parse. Check model output format.")
+                return Detection(label="unknown", confidence=0.0)
+            elif len(main_output.shape) >= 2:
                 # YOLOv8 format: [1, num_features, num_boxes] or [num_features, num_boxes]
                 if main_output.shape[-2] < main_output.shape[-1]:
                     detections = self.parse_yolov8_output(outputs)
