@@ -176,15 +176,6 @@ class ObjectDetector:
             logger.debug(traceback.format_exc())
         
         return detections
-            
-            logger.info(f"Found {len(detections)} detections above threshold")
-            
-        except Exception as e:
-            logger.error(f"Error parsing YOLOv8 output: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-        
-        return detections
     
     def parse_yolov5_output(self, outputs: List[np.ndarray]) -> List[Detection]:
         """
