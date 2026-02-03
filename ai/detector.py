@@ -107,7 +107,7 @@ class ObjectDetector:
             # Dequantize if needed
             output = self.dequantize(output, self.output_details[0])
             
-            logger.debug(f"Output shape: {output.shape}, dtype: {output.dtype}")
+            logger.debug(f"YOLOv8 output shape: {output.shape}, dtype: {output.dtype}, min: {np.min(output)}, max: {np.max(output)}")
             
             # Handle 1D output
             if len(output.shape) == 1:
@@ -117,6 +117,7 @@ class ObjectDetector:
             # Remove batch dimension
             if output.shape[0] == 1:
                 output = output[0]
+                logger.debug(f"Removed batch dimension: {output.shape}")
             
             # YOLOv8 format: [num_features, num_boxes]
             # We need [num_boxes, num_features]
@@ -133,7 +134,7 @@ class ObjectDetector:
             # First 4 features are bbox, rest are class scores
             num_classes = num_features - 4
             
-            for i in range(num_boxes):
+            for i in range(min(num_boxes, 10)):  # Log first 10 boxes for debugging
                 # Extract bbox (center_x, center_y, width, height)
                 bbox = output[i, :4]
                 
@@ -144,10 +145,13 @@ class ObjectDetector:
                 class_id = np.argmax(class_scores)
                 confidence = float(class_scores[class_id])
                 
+                logger.debug(f"Box {i}: max_score={confidence:.4f}, class_id={class_id}")
+                
                 # Filter by confidence
                 if confidence >= self.confidence_threshold:
                     # Get label
                     label = self.labels.get(class_id, "unknown")
+                    logger.debug(f"  -> ACCEPTED: label={label}, confidence={confidence:.4f}")
                     
                     # Convert bbox from center format to corner format
                     # (center_x, center_y, w, h) -> (x, y, w, h)
@@ -161,6 +165,17 @@ class ObjectDetector:
                         bbox=(x, y, float(w), float(h))
                     )
                     detections.append(detection)
+                else:
+                    logger.debug(f"  -> REJECTED: confidence {confidence:.4f} < threshold {self.confidence_threshold}")
+            
+            logger.info(f"Found {len(detections)} detections above threshold")
+            
+        except Exception as e:
+            logger.error(f"Error parsing YOLOv8 output: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+        
+        return detections
             
             logger.info(f"Found {len(detections)} detections above threshold")
             
@@ -184,7 +199,7 @@ class ObjectDetector:
             output = outputs[0]
             output = self.dequantize(output, self.output_details[0])
             
-            logger.debug(f"Output shape: {output.shape}")
+            logger.debug(f"YOLOv5 output shape before processing: {output.shape}")
             
             # Handle shape variations
             # Skip batch dimension if present and ensure we have 2D output
@@ -198,6 +213,8 @@ class ObjectDetector:
             if len(output.shape) == 1:
                 logger.debug(f"1D output detected, cannot parse YOLOv5 format")
                 return detections
+            
+            logger.debug(f"YOLOv5 output shape after processing: {output.shape}")
             
             # output is now [num_boxes, 85]
             for i in range(output.shape[0]):
@@ -213,8 +230,11 @@ class ObjectDetector:
                 # Combined confidence
                 confidence = objectness * class_confidence
                 
+                logger.debug(f"Box {i}: objectness={objectness:.4f}, class_conf={class_confidence:.4f}, combined={confidence:.4f}, class_id={class_id}")
+                
                 if confidence >= self.confidence_threshold:
                     label = self.labels.get(class_id, "unknown")
+                    logger.debug(f"  -> ACCEPTED: label={label}, confidence={confidence:.4f}")
                     
                     detection = Detection(
                         label=label,
@@ -222,6 +242,8 @@ class ObjectDetector:
                         bbox=tuple(bbox.astype(float))
                     )
                     detections.append(detection)
+                else:
+                    logger.debug(f"  -> REJECTED: confidence {confidence:.4f} < threshold {self.confidence_threshold}")
             
             logger.info(f"Found {len(detections)} detections above threshold")
             
@@ -305,7 +327,7 @@ class ObjectDetector:
             # Check output shape to determine format
             main_output = outputs[0]
             
-            logger.debug(f"Main output shape: {main_output.shape}")
+            logger.debug(f"Main output shape: {main_output.shape}, dtype: {main_output.dtype}, min: {np.min(main_output)}, max: {np.max(main_output)}")
             
             if len(main_output.shape) == 1:
                 logger.warning("Output is 1D - cannot parse. Check model output format.")
@@ -318,8 +340,15 @@ class ObjectDetector:
                 else:
                     detections = self.parse_yolov5_output(outputs)
             
+            # Log detections before NMS
+            logger.debug(f"Detections before NMS: {len(detections)}")
+            for det in detections:
+                logger.debug(f"  - {det}")
+            
             # Apply NMS
             detections = self.non_max_suppression(detections)
+            
+            logger.debug(f"Detections after NMS: {len(detections)}")
             
             # Return best detection
             if detections:
@@ -327,6 +356,7 @@ class ObjectDetector:
                 logger.info(f"Best detection: {best}")
                 return best
             else:
+                logger.debug("No detections above confidence threshold")
                 return Detection(label="unknown", confidence=0.0)
             
         except Exception as e:
