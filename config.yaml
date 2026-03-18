@@ -8,7 +8,7 @@ motion:
 
 ai:
   confidence_threshold: 0.6
-  model_path: "./models/heron_int8_edgetpu.tflite"
+  model_path: "./models/best_int8.tflite"
   use_edge_tpu: true
 
 alert:
