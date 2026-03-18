@@ -9,9 +9,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 class ModelLoader:
-    def __init__(self, model_path: str, use_edge_tpu: bool = False):
+    def __init__(self, model_path: str, use_edge_tpu: bool = False, num_threads: int = 1):
         self.model_path = Path(model_path)
         self.use_edge_tpu = use_edge_tpu
+        self.num_threads = num_threads
         self.interpreter = None
         self.input_details = None
         self.output_details = None
@@ -45,8 +46,11 @@ class ModelLoader:
                 except ImportError:
                     import tensorflow as tf
                     Interpreter = tf.lite.Interpreter
-                
-                self.interpreter = Interpreter(model_path=str(self.model_path))
+
+                self.interpreter = Interpreter(
+                    model_path=str(self.model_path),
+                    num_threads=self.num_threads
+                )
                 logger.info("Model loaded on CPU")
             
             self.interpreter.allocate_tensors()

@@ -9,7 +9,14 @@ motion:
 ai:
   confidence_threshold: 0.6
   model_path: "./models/best_int8.tflite"
-  use_edge_tpu: true
+  use_edge_tpu: false
+  num_threads: 4
+  labels:
+    0: "heron"
+    1: "cat"
+    2: "dog"
+    3: "bird"
+    4: "person"
 
 alert:
   sms_enabled: true
@@ -43,8 +50,8 @@ system:
     start: "06:00"
     end: "20:00"
   camera_device_id: 0
-  frame_rate: 10
+  frame_rate: 5
   resolution:
     width: 640
     height: 480
-  running_on_raspberry_pi: false
+  running_on_raspberry_pi: true

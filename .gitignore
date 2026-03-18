@@ -1,0 +1,30 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.*
+
+# ML models — binary files, distribute separately
+models/*.tflite
+models/*.pb
+models/*.h5
+
+# Generated data — do not commit media, database, or logs
+media/
+data/
+*.log
+*.log.*
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,48 @@
+# ============================================================
+# Systemd service unit for the Heron Deterrent System
+#
+# Install:
+#   sudo cp heron-deterrent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable heron-deterrent
+#   sudo systemctl start heron-deterrent
+#
+# Useful commands:
+#   sudo systemctl status heron-deterrent
+#   sudo journalctl -u heron-deterrent -f
+# ============================================================
+
+[Unit]
+Description=Heron Deterrent System
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/heron_deterrent
+ExecStart=/home/pi/heron_deterrent/venv/bin/python main.py
+
+# Start the web UI automatically
+Environment="START_WEB_UI=true"
+
+# Twilio credentials — set these instead of storing them in config.yaml
+# Environment="TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Environment="TWILIO_AUTH_TOKEN=your_auth_token"
+# Environment="TWILIO_FROM_NUMBER=+1xxxxxxxxxx"
+# Environment="TWILIO_TO_NUMBER=+1xxxxxxxxxx"
+
+# Restart automatically if the process crashes
+Restart=on-failure
+RestartSec=10
+
+# Give the process time to shut down gracefully
+TimeoutStopSec=30
+
+# Limit log spam to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=heron-deterrent
+
+[Install]
+WantedBy=multi-user.target

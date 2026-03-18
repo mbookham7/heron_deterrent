@@ -25,15 +25,16 @@ class ObjectDetector:
     Handles YOLOv5 and YOLOv8 TFLite output formats
     """
     
-    def __init__(self, model_loader, confidence_threshold: float = 0.6, iou_threshold: float = 0.45):
+    def __init__(self, model_loader, confidence_threshold: float = 0.6,
+                 iou_threshold: float = 0.45, labels: Dict[int, str] = None):
         self.interpreter = model_loader.get_interpreter()
         self.input_details = model_loader.get_input_details()
         self.output_details = model_loader.get_output_details()
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
-        
-        # YOLO class labels (customize based on your model)
-        self.labels = {
+
+        # Labels loaded from config; fall back to sensible defaults
+        self.labels = labels or {
             0: "heron",
             1: "cat",
             2: "dog",

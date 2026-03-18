@@ -5,492 +5,1032 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Heron Deterrent System</title>
     <style>
+        :root {
+            --bg:        #0d1117;
+            --surface:   #161b22;
+            --border:    #21262d;
+            --border-hi: #30363d;
+            --text:      #c9d1d9;
+            --text-dim:  #8b949e;
+            --text-mute: #484f58;
+            --blue:      #58a6ff;
+            --green:     #3fb950;
+            --red:       #f85149;
+            --yellow:    #d29922;
+            --purple:    #a371f7;
+            --radius:    8px;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        header {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        
-        h1 {
-            color: #667eea;
-            margin-bottom: 10px;
-        }
-        
-        .status {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-        
-        .status-item {
-            background: #f0f0f0;
-            padding: 8px 15px;
-            border-radius: 5px;
             font-size: 14px;
+            line-height: 1.5;
         }
-        
-        .status-item.online { background: #d4edda; color: #155724; }
-        .status-item.offline { background: #f8d7da; color: #721c24; }
-        
-        .grid {
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+
+        /* ── Layout ── */
+        .app { display: flex; flex-direction: column; min-height: 100vh; }
+
+        /* ── Top bar ── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .brand-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #1c6ef3, #a371f7);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .topbar-status {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-dim);
+            padding: 4px 10px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--text-mute);
+        }
+        .status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+        .status-dot.offline { background: var(--red); }
+        .status-dot.warning { background: var(--yellow); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* ── Main grid ── */
+        .main {
+            padding: 20px 24px;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
         }
-        
+
+        @media (max-width: 960px) {
+            .main { grid-template-columns: 1fr; }
+        }
+
+        .full-width { grid-column: 1 / -1; }
+
+        /* ── Cards ── */
         .card {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        
-        .card h2 {
-            color: #667eea;
-            margin-bottom: 15px;
-            font-size: 20px;
-        }
-        
-        .video-container {
-            background: #000;
-            border-radius: 5px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
             overflow: hidden;
-            margin-bottom: 10px;
         }
-        
-        .video-container img {
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 10px;
+            background: var(--border-hi);
+            color: var(--text-dim);
+        }
+
+        .badge.red { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .badge.green { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+
+        .card-body { padding: 16px; }
+
+        /* ── Stats strip ── */
+        .stats-strip {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+
+        @media (max-width: 700px) {
+            .stats-strip { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 6px;
+        }
+
+        .stat-value {
+            font-size: 26px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1;
+        }
+
+        .stat-value.blue { color: var(--blue); }
+        .stat-value.green { color: var(--green); }
+        .stat-value.red { color: var(--red); }
+
+        .stat-sub {
+            font-size: 11px;
+            color: var(--text-mute);
+            margin-top: 4px;
+        }
+
+        /* ── Live stream ── */
+        .stream-wrap {
+            position: relative;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+            aspect-ratio: 4/3;
+        }
+
+        .stream-wrap img {
             width: 100%;
+            height: 100%;
+            object-fit: cover;
             display: block;
         }
-        
-        button {
-            background: #667eea;
-            color: white;
+
+        .stream-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 10px 12px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.75));
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .live-badge {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: #fff;
+            background: var(--red);
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .stream-label {
+            font-size: 11px;
+            color: rgba(255,255,255,0.7);
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
             border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
             cursor: pointer;
-            font-size: 14px;
-            transition: background 0.3s;
+            transition: opacity 0.15s, transform 0.1s;
         }
-        
-        button:hover {
-            background: #5568d3;
+
+        .btn:hover { opacity: 0.85; }
+        .btn:active { transform: scale(0.97); }
+
+        .btn-primary { background: var(--blue); color: #fff; }
+        .btn-danger  { background: var(--red);  color: #fff; }
+        .btn-subtle  {
+            background: var(--border);
+            color: var(--text);
+            border: 1px solid var(--border-hi);
         }
-        
-        button.danger {
-            background: #dc3545;
+
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            flex-wrap: wrap;
         }
-        
-        button.danger:hover {
-            background: #c82333;
-        }
-        
-        .alert-list, .detection-list {
-            max-height: 400px;
+
+        /* ── Alert feed ── */
+        .feed {
+            max-height: 340px;
             overflow-y: auto;
         }
-        
-        .alert-item, .detection-item {
-            padding: 10px;
-            border-bottom: 1px solid #e0e0e0;
-            font-size: 14px;
+
+        .feed-item {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
         }
-        
-        .alert-item:last-child, .detection-item:last-child {
-            border-bottom: none;
+
+        .feed-item:last-child { border-bottom: none; }
+
+        .feed-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            flex-shrink: 0;
+            margin-top: 1px;
         }
-        
-        .alert-critical {
-            background: #f8d7da;
-            border-left: 4px solid #dc3545;
+
+        .feed-icon.critical { background: rgba(248,81,73,0.15); }
+        .feed-icon.warning  { background: rgba(210,153,34,0.15); }
+        .feed-icon.info     { background: rgba(88,166,255,0.15); }
+
+        .feed-content { flex: 1; min-width: 0; }
+        .feed-msg { color: var(--text); word-break: break-word; }
+        .feed-time { font-size: 11px; color: var(--text-mute); margin-top: 2px; }
+
+        /* ── Detection list ── */
+        .det-list { max-height: 320px; overflow-y: auto; }
+
+        .det-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
         }
-        
-        .alert-warning {
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
-        }
-        
-        .timestamp {
-            color: #666;
+
+        .det-item:last-child { border-bottom: none; }
+
+        .det-label {
             font-size: 12px;
+            font-weight: 600;
+            min-width: 55px;
+            color: var(--text);
         }
-        
-        .file-upload {
-            border: 2px dashed #667eea;
-            border-radius: 5px;
-            padding: 20px;
+
+        .conf-bar-wrap { flex: 1; }
+
+        .conf-bar-bg {
+            height: 6px;
+            background: var(--border-hi);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .conf-bar {
+            height: 100%;
+            border-radius: 3px;
+            background: linear-gradient(90deg, var(--blue), var(--purple));
+            transition: width 0.4s ease;
+        }
+
+        .conf-bar.high { background: linear-gradient(90deg, var(--green), var(--blue)); }
+        .conf-bar.low  { background: var(--yellow); }
+
+        .conf-pct { font-size: 12px; color: var(--text-dim); min-width: 38px; text-align: right; }
+        .det-time { font-size: 11px; color: var(--text-mute); min-width: 80px; text-align: right; }
+
+        /* ── Gallery ── */
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .gallery-item {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+
+        .gallery-item:hover { border-color: var(--blue); }
+
+        .gallery-video {
+            width: 100%;
+            display: block;
+            background: #000;
+        }
+
+        .gallery-meta {
+            padding: 8px 10px;
+        }
+
+        .gallery-conf {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--green);
+        }
+
+        .gallery-time {
+            font-size: 11px;
+            color: var(--text-mute);
+            margin-top: 2px;
+        }
+
+        /* ── Upload ── */
+        .drop-zone {
+            border: 2px dashed var(--border-hi);
+            border-radius: 6px;
+            padding: 28px;
             text-align: center;
             cursor: pointer;
-            margin-top: 10px;
+            transition: border-color 0.2s, background 0.2s;
+            color: var(--text-dim);
         }
-        
-        .file-upload:hover {
-            background: #f0f0f0;
+
+        .drop-zone:hover {
+            border-color: var(--blue);
+            background: rgba(88,166,255,0.04);
+            color: var(--text);
         }
-        
-        input[type="file"] {
-            display: none;
+
+        .drop-zone-icon { font-size: 28px; margin-bottom: 8px; }
+        .drop-zone p { font-size: 13px; }
+        .drop-zone small { font-size: 11px; color: var(--text-mute); }
+
+        input[type="file"] { display: none; }
+
+        /* ── Progress ── */
+        .progress-wrap { margin-top: 14px; display: none; }
+        .progress-label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+        .progress-bg {
+            height: 4px;
+            background: var(--border-hi);
+            border-radius: 2px;
+            overflow: hidden;
         }
-        
-        .label-section {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #e0e0e0;
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--blue), var(--purple));
+            border-radius: 2px;
+            width: 0%;
+            transition: width 0.3s ease;
         }
-        
-        .label-section input, .label-section select {
-            width: 100%;
-            padding: 8px;
-            margin: 5px 0;
-            border: 1px solid #ddd;
-            border-radius: 5px;
+
+        /* ── Label tool ── */
+        .label-tool { margin-top: 12px; }
+
+        .form-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 8px;
         }
+
+        .form-input, .form-select {
+            flex: 1;
+            padding: 7px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border-hi);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--blue);
+        }
+
+        .form-select option { background: var(--surface); }
+
+        /* ── Toast notifications ── */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 9999;
+        }
+
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            background: var(--surface);
+            border: 1px solid var(--border-hi);
+            border-radius: var(--radius);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            font-size: 13px;
+            color: var(--text);
+            min-width: 260px;
+            max-width: 380px;
+            animation: slideIn 0.2s ease;
+        }
+
+        .toast.success { border-left: 3px solid var(--green); }
+        .toast.error   { border-left: 3px solid var(--red); }
+        .toast.info    { border-left: 3px solid var(--blue); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to   { transform: translateX(0);    opacity: 1; }
+        }
+
+        @keyframes slideOut {
+            from { transform: translateX(0);    opacity: 1; }
+            to   { transform: translateX(100%); opacity: 0; }
+        }
+
+        /* ── Empty states ── */
+        .empty {
+            padding: 28px 16px;
+            text-align: center;
+            color: var(--text-mute);
+            font-size: 13px;
+        }
+
+        .empty-icon { font-size: 28px; margin-bottom: 8px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>🦆 Heron Deterrent System</h1>
-            <div class="status" id="status">
-                <div class="status-item">Loading...</div>
+<div class="app">
+
+    <!-- Top bar -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <div class="brand-icon">🦅</div>
+            Heron Deterrent
+        </div>
+        <div class="topbar-status">
+            <div class="status-pill">
+                <span class="status-dot" id="dot-system"></span>
+                <span id="lbl-system">Connecting…</span>
             </div>
-        </header>
-        
-        <div class="grid">
-            <div class="card">
-                <h2>📹 Live Stream</h2>
-                <div class="video-container">
-                    <img id="live-stream" src="/api/live-stream" alt="Live camera feed">
+            <div class="status-pill">
+                <span class="status-dot" id="dot-camera"></span>
+                <span id="lbl-camera">Camera</span>
+            </div>
+            <div class="status-pill" id="pill-active">
+                <span class="status-dot" id="dot-active"></span>
+                <span id="lbl-active">Active hours</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="main">
+
+        <!-- Stats strip -->
+        <div class="full-width">
+            <div class="stats-strip">
+                <div class="stat-card">
+                    <div class="stat-label">Herons Today</div>
+                    <div class="stat-value red" id="stat-today">—</div>
+                    <div class="stat-sub">detections</div>
                 </div>
-                <button onclick="triggerDeterrent()">🔊 Trigger Deterrent</button>
-            </div>
-            
-            <div class="card">
-                <h2>🚨 Recent Alerts</h2>
-                <div class="alert-list" id="alerts">
-                    <div class="alert-item">Loading alerts...</div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Detections</div>
+                    <div class="stat-value blue" id="stat-total">—</div>
+                    <div class="stat-sub">all time</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Last Detection</div>
+                    <div class="stat-value green" id="stat-last" style="font-size:16px; padding-top:4px;">—</div>
+                    <div class="stat-sub" id="stat-last-label">no detections yet</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Alerts Sent</div>
+                    <div class="stat-value" id="stat-alerts">—</div>
+                    <div class="stat-sub">total alerts</div>
                 </div>
             </div>
         </div>
-        
-        <div class="grid">
-            <div class="card">
-                <h2>🎯 Heron Detections</h2>
-                <div class="detection-list" id="heron-detections">
-                    <div class="detection-item">Loading...</div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h2>❓ Unclassified Objects</h2>
-                <div class="detection-list" id="unclassified">
-                    <div class="detection-item">Loading...</div>
-                </div>
-                <div class="label-section">
-                    <h3>Label Selected Detection</h3>
-                    <input type="number" id="detection-id" placeholder="Detection ID">
-                    <select id="label-select">
-                        <option value="heron">Heron</option>
-                        <option value="cat">Cat</option>
-                        <option value="dog">Dog</option>
-                        <option value="bird">Other Bird</option>
-                        <option value="person">Person</option>
-                    </select>
-                    <button onclick="submitLabel()">Submit Label</button>
-                </div>
-            </div>
-        </div>
-        
+
+        <!-- Live stream -->
         <div class="card">
-            <h2>📤 Test Video Upload</h2>
-            <div class="file-upload" onclick="document.getElementById('video-upload').click()">
-                <p>Click to upload test video (MP4 or MOV)</p>
-                <input type="file" id="video-upload" accept="video/mp4,video/quicktime,.mp4,.mov" onchange="uploadVideo()">
+            <div class="card-header">
+                <span class="card-title">📹 Live Feed</span>
+                <span class="badge" id="badge-live">LOADING</span>
             </div>
-            <div id="upload-progress" style="display:none; margin-top:15px;">
-                <p id="progress-text"></p>
-                <div style="background: #e0e0e0; border-radius: 5px; height: 20px; overflow: hidden;">
-                    <div id="progress-bar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+            <div class="card-body" style="padding: 12px;">
+                <div class="stream-wrap">
+                    <img id="live-stream" src="/api/live-stream" alt="Live camera feed"
+                         onerror="this.parentElement.querySelector('.stream-overlay .stream-label').textContent='No signal'">
+                    <div class="stream-overlay">
+                        <span class="live-badge">LIVE</span>
+                        <span class="stream-label" id="stream-status">Streaming</span>
+                    </div>
+                </div>
+                <div class="btn-row">
+                    <button class="btn btn-danger" onclick="triggerDeterrent()">🔊 Trigger Deterrent</button>
                 </div>
             </div>
-            <div id="upload-results" style="display:none; margin-top:15px;">
-                <h3>✅ Upload Complete</h3>
-                <p id="results-text"></p>
-                <div id="heron-results" style="margin-top:10px;"></div>
-            </div>
         </div>
-        
+
+        <!-- Recent alerts -->
         <div class="card">
-            <h2>🦅 Detected Herons Gallery</h2>
-            <div id="herons-gallery" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
-                <p style="grid-column: 1/-1; color: #666;">No herons detected yet</p>
+            <div class="card-header">
+                <span class="card-title">🚨 Recent Alerts</span>
+                <span class="badge red" id="badge-alerts">0</span>
+            </div>
+            <div class="feed" id="alerts-feed">
+                <div class="empty"><div class="empty-icon">🔔</div>No alerts yet</div>
             </div>
         </div>
+
+        <!-- Heron detections -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🎯 Heron Detections</span>
+                <span class="badge red" id="badge-herons">0</span>
+            </div>
+            <div class="det-list" id="heron-det-list">
+                <div class="empty"><div class="empty-icon">🦅</div>No herons detected yet</div>
+            </div>
+        </div>
+
+        <!-- Unclassified -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">❓ Unclassified Objects</span>
+                <span class="badge" id="badge-unclass">0</span>
+            </div>
+            <div class="det-list" id="unclass-list">
+                <div class="empty"><div class="empty-icon">🔍</div>Nothing unclassified</div>
+            </div>
+            <div class="card-body">
+                <div class="label-tool">
+                    <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;">Label a detection</div>
+                    <div class="form-row">
+                        <input class="form-input" type="number" id="detection-id" placeholder="Detection ID" min="1">
+                        <select class="form-select" id="label-select">
+                            <option value="heron">Heron</option>
+                            <option value="cat">Cat</option>
+                            <option value="dog">Dog</option>
+                            <option value="bird">Other Bird</option>
+                            <option value="person">Person</option>
+                            <option value="unknown">Unknown</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="submitLabel()">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gallery -->
+        <div class="card full-width">
+            <div class="card-header">
+                <span class="card-title">🎬 Heron Gallery</span>
+                <span class="badge" id="badge-gallery">0</span>
+            </div>
+            <div class="card-body">
+                <div class="gallery" id="gallery">
+                    <div class="empty" style="grid-column:1/-1">
+                        <div class="empty-icon">📽️</div>No heron clips saved yet
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test upload -->
+        <div class="card full-width">
+            <div class="card-header">
+                <span class="card-title">📤 Test Video Upload</span>
+            </div>
+            <div class="card-body">
+                <div class="drop-zone" onclick="document.getElementById('video-upload').click()">
+                    <div class="drop-zone-icon">🎥</div>
+                    <p>Click to upload a test video</p>
+                    <small>MP4, MOV, AVI, MKV · Max file size depends on server</small>
+                    <input type="file" id="video-upload" accept="video/mp4,video/quicktime,video/avi,video/mkv,.mp4,.mov,.avi,.mkv" onchange="uploadVideo()">
+                </div>
+
+                <div class="progress-wrap" id="progress-wrap">
+                    <div class="progress-label" id="progress-label">Processing…</div>
+                    <div class="progress-bg">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+
+                <div id="upload-results" style="display:none; margin-top:14px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:6px;">
+                    <div style="font-size:13px; color:var(--green); font-weight:600; margin-bottom:6px;">✓ Analysis complete</div>
+                    <div id="results-text" style="font-size:13px; color:var(--text-dim);"></div>
+                </div>
+            </div>
+        </div>
+
     </div>
-    
-    <script>
-        // Refresh data every 5 seconds
-        setInterval(updateData, 5000);
-        updateData();
-        
-        async function updateData() {
-            await updateStatus();
-            await updateAlerts();
-            await updateDetections();
-            await updateUnclassified();
-            await updateHeronGallery();
-        }
-        
-        async function updateStatus() {
-            try {
-                const response = await fetch('/api/system-status');
-                const data = await response.json();
-                
-                const statusDiv = document.getElementById('status');
-                statusDiv.innerHTML = `
-                    <div class="status-item ${data.status === 'online' ? 'online' : 'offline'}">
-                        System: ${data.status}
-                    </div>
-                    <div class="status-item ${data.camera_connected ? 'online' : 'offline'}">
-                        Camera: ${data.camera_connected ? 'Connected' : 'Disconnected'}
-                    </div>
-                    <div class="status-item">
-                        Active Hours: ${data.active_hours ? 'Yes' : 'No'}
-                    </div>
-                `;
-            } catch (error) {
-                console.error('Error updating status:', error);
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+    // ── Toast system ────────────────────────────────────────────────
+    function toast(message, type = 'info', duration = 3500) {
+        const icons = { success: '✓', error: '✕', info: 'ℹ' };
+        const el = document.createElement('div');
+        el.className = `toast ${type}`;
+        el.innerHTML = `<span>${icons[type] || 'ℹ'}</span><span>${message}</span>`;
+        document.getElementById('toast-container').appendChild(el);
+        setTimeout(() => {
+            el.style.animation = 'slideOut 0.2s ease forwards';
+            setTimeout(() => el.remove(), 200);
+        }, duration);
+    }
+
+    // ── Relative time ────────────────────────────────────────────────
+    function timeAgo(ts) {
+        if (!ts) return '—';
+        const d = ts.includes('T') || ts.includes(' ') ? new Date(ts) : new Date(ts + 'Z');
+        const s = Math.floor((Date.now() - d) / 1000);
+        if (s < 5)   return 'just now';
+        if (s < 60)  return `${s}s ago`;
+        if (s < 3600) return `${Math.floor(s/60)}m ago`;
+        if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+        return `${Math.floor(s/86400)}d ago`;
+    }
+
+    function fmtTime(ts) {
+        if (!ts) return '';
+        const d = ts.includes('T') || ts.includes(' ') ? new Date(ts) : new Date(ts + 'Z');
+        return d.toLocaleString();
+    }
+
+    // ── Polling ──────────────────────────────────────────────────────
+    let previousAlertCount = 0;
+    let previousHeronCount = 0;
+
+    setInterval(updateAll, 5000);
+    updateAll();
+
+    async function updateAll() {
+        await Promise.allSettled([
+            updateStatus(),
+            updateAlerts(),
+            updateHeronDetections(),
+            updateUnclassified(),
+            updateGallery(),
+            updateStats()
+        ]);
+    }
+
+    // ── Status ──────────────────────────────────────────────────────
+    async function updateStatus() {
+        try {
+            const r = await fetch('/api/system-status');
+            const d = await r.json();
+
+            const online = d.status === 'online';
+            setDot('dot-system', online ? 'online' : 'offline');
+            document.getElementById('lbl-system').textContent = online ? 'Online' : 'Offline';
+
+            setDot('dot-camera', d.camera_connected ? 'online' : 'offline');
+            document.getElementById('lbl-camera').textContent = d.camera_connected ? 'Camera OK' : 'No Camera';
+
+            setDot('dot-active', d.active_hours ? 'online' : 'warning');
+            document.getElementById('lbl-active').textContent = d.active_hours ? 'Active' : 'Inactive hours';
+
+            document.getElementById('badge-live').textContent = online ? 'LIVE' : 'OFFLINE';
+        } catch {}
+    }
+
+    function setDot(id, state) {
+        const el = document.getElementById(id);
+        el.className = 'status-dot ' + state;
+    }
+
+    // ── Stats ────────────────────────────────────────────────────────
+    async function updateStats() {
+        try {
+            const [allR, heronR, alertsR] = await Promise.all([
+                fetch('/api/detections?limit=500'),
+                fetch('/api/heron-detections?limit=500'),
+                fetch('/api/alerts?limit=500')
+            ]);
+            const all    = await allR.json();
+            const herons = await heronR.json();
+            const alerts = await alertsR.json();
+
+            document.getElementById('stat-total').textContent  = all.length;
+            document.getElementById('stat-alerts').textContent = alerts.length;
+
+            // Herons detected today
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const todayHerons = herons.filter(h => {
+                const d = new Date(h.timestamp);
+                return d >= today;
+            });
+            document.getElementById('stat-today').textContent = todayHerons.length;
+
+            // Last detection
+            if (herons.length > 0) {
+                const last = herons[0];
+                document.getElementById('stat-last').textContent = timeAgo(last.timestamp);
+                document.getElementById('stat-last-label').textContent = fmtTime(last.timestamp);
             }
-        }
-        
-        async function updateAlerts() {
-            try {
-                const response = await fetch('/api/alerts');
-                const alerts = await response.json();
-                
-                const alertsDiv = document.getElementById('alerts');
-                if (alerts.length === 0) {
-                    alertsDiv.innerHTML = '<div class="alert-item">No alerts</div>';
-                } else {
-                    alertsDiv.innerHTML = alerts.map(alert => `
-                        <div class="alert-item alert-${alert.type.toLowerCase()}">
-                            <strong>${alert.type}</strong>: ${alert.message}
-                            <div class="timestamp">${new Date(alert.timestamp).toLocaleString()}</div>
-                        </div>
-                    `).join('');
-                }
-            } catch (error) {
-                console.error('Error updating alerts:', error);
+        } catch {}
+    }
+
+    // ── Alerts ──────────────────────────────────────────────────────
+    async function updateAlerts() {
+        try {
+            const r = await fetch('/api/alerts?limit=50');
+            const alerts = await r.json();
+
+            document.getElementById('badge-alerts').textContent = alerts.length;
+
+            if (alerts.length > previousAlertCount && previousAlertCount > 0) {
+                toast('New alert received', 'error');
             }
-        }
-        
-        async function updateDetections() {
-            try {
-                const response = await fetch('/api/detections?label=heron&limit=20');
-                const detections = await response.json();
-                
-                const detectionsDiv = document.getElementById('heron-detections');
-                if (detections.length === 0) {
-                    detectionsDiv.innerHTML = '<div class="detection-item">No heron detections</div>';
-                } else {
-                    detectionsDiv.innerHTML = detections.map(det => `
-                        <div class="detection-item">
-                            <strong>Confidence:</strong> ${(det.confidence * 100).toFixed(1)}%
-                            <div class="timestamp">${new Date(det.timestamp).toLocaleString()}</div>
-                        </div>
-                    `).join('');
-                }
-            } catch (error) {
-                console.error('Error updating detections:', error);
-            }
-        }
-        
-        async function updateUnclassified() {
-            try {
-                const response = await fetch('/api/unclassified');
-                const detections = await response.json();
-                
-                const unclassifiedDiv = document.getElementById('unclassified');
-                if (detections.length === 0) {
-                    unclassifiedDiv.innerHTML = '<div class="detection-item">No unclassified objects</div>';
-                } else {
-                    unclassifiedDiv.innerHTML = detections.map(det => `
-                        <div class="detection-item">
-                            <strong>ID:</strong> ${det.id}
-                            <div class="timestamp">${new Date(det.timestamp).toLocaleString()}</div>
-                        </div>
-                    `).join('');
-                }
-            } catch (error) {
-                console.error('Error updating unclassified:', error);
-            }
-        }
-        
-        async function triggerDeterrent() {
-            try {
-                const response = await fetch('/api/trigger-deterrent', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    alert('Deterrent triggered!');
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            } catch (error) {
-                alert('Error triggering deterrent');
-            }
-        }
-        
-        async function submitLabel() {
-            const detectionId = document.getElementById('detection-id').value;
-            const label = document.getElementById('label-select').value;
-            
-            if (!detectionId) {
-                alert('Please enter a detection ID');
+            previousAlertCount = alerts.length;
+
+            const feed = document.getElementById('alerts-feed');
+            if (!alerts.length) {
+                feed.innerHTML = '<div class="empty"><div class="empty-icon">🔔</div>No alerts yet</div>';
                 return;
             }
-            
-            try {
-                const response = await fetch('/api/label', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        detection_id: parseInt(detectionId),
-                        label: label,
-                        bboxes: []
-                    })
-                });
-                
-                const data = await response.json();
-                if (data.success) {
-                    alert('Label submitted successfully!');
-                    document.getElementById('detection-id').value = '';
-                    updateData();
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            } catch (error) {
-                alert('Error submitting label');
-            }
-        }
-        
-        async function uploadVideo() {
-            const fileInput = document.getElementById('video-upload');
-            const file = fileInput.files[0];
-            
-            if (!file) return;
-            
-            // Show progress
-            document.getElementById('upload-progress').style.display = 'block';
-            document.getElementById('upload-results').style.display = 'none';
-            document.getElementById('progress-text').textContent = 'Uploading and processing video...';
-            document.getElementById('progress-bar').style.width = '0%';
-            
-            const formData = new FormData();
-            formData.append('video', file);
-            
-            try {
-                // Simulate progress
-                let progress = 0;
-                const progressInterval = setInterval(() => {
-                    if (progress < 90) {
-                        progress += Math.random() * 30;
-                        document.getElementById('progress-bar').style.width = Math.min(progress, 90) + '%';
-                    }
-                }, 300);
-                
-                const response = await fetch('/api/upload-test-video', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                clearInterval(progressInterval);
-                const data = await response.json();
-                
-                if (data.success) {
-                    // Complete progress
-                    document.getElementById('progress-bar').style.width = '100%';
-                    document.getElementById('progress-text').textContent = 'Processing complete!';
-                    
-                    // Show results
-                    setTimeout(() => {
-                        document.getElementById('upload-progress').style.display = 'none';
-                        document.getElementById('upload-results').style.display = 'block';
-                        document.getElementById('results-text').textContent = 
-                            `✓ Processed ${data.frames_processed} frames\n✓ Detected ${data.herons_detected} herons`;
-                        
-                        // Show detected herons
-                        if (data.detections && data.detections.length > 0) {
-                            document.getElementById('heron-results').innerHTML = 
-                                `<strong>Recent Detections:</strong> ${data.detections.length} heron(s) found`;
-                        }
-                        
-                        updateData();
-                    }, 500);
-                } else {
-                    alert('Error: ' + data.error);
-                    document.getElementById('upload-progress').style.display = 'none';
-                }
-            } catch (error) {
-                alert('Error uploading video');
-                document.getElementById('upload-progress').style.display = 'none';
-            }
-            
-            fileInput.value = '';
-        }
-        
-        async function updateHeronGallery() {
-            try {
-                const response = await fetch('/api/heron-detections?limit=20');
-                const detections = await response.json();
-                
-                const gallery = document.getElementById('herons-gallery');
-                
-                if (!detections || detections.length === 0) {
-                    gallery.innerHTML = '<p style="grid-column: 1/-1; color: #666;">No herons detected yet</p>';
-                    return;
-                }
-                
-                gallery.innerHTML = detections.map((detection, index) => `
-                    <div style="background: #f5f5f5; border-radius: 8px; padding: 10px; text-align: center;">
-                        <div style="background: #fff; border-radius: 5px; padding: 8px; margin-bottom: 8px; min-height: 150px; display: flex; align-items: center; justify-content: center;">
-                            ${detection.video_path ? 
-                                `<video width="100%" height="auto" controls style="border-radius: 5px;">
-                                    <source src="/api/media/${detection.video_path}" type="video/mp4">
-                                    Your browser does not support the video tag.
-                                </video>` 
-                                : '<p style="color: #999;">No preview available</p>'
-                            }
+
+            feed.innerHTML = alerts.map(a => {
+                const type = (a.type || '').toLowerCase();
+                const icon = type === 'critical' ? '🚨' : type === 'warning' ? '⚠️' : 'ℹ️';
+                return `
+                    <div class="feed-item">
+                        <div class="feed-icon ${type}">${icon}</div>
+                        <div class="feed-content">
+                            <div class="feed-msg">${escHtml(a.message || a.type)}</div>
+                            <div class="feed-time">${timeAgo(a.timestamp)} · ${fmtTime(a.timestamp)}</div>
                         </div>
-                        <p style="margin: 5px 0; font-size: 12px;">
-                            <strong>Confidence:</strong> ${(detection.confidence * 100).toFixed(1)}%
-                        </p>
-                        <p style="margin: 5px 0; font-size: 11px; color: #666;">
-                            ${new Date(detection.timestamp).toLocaleString()}
-                        </p>
-                    </div>
-                `).join('');
-            } catch (error) {
-                console.error('Error loading heron gallery:', error);
+                    </div>`;
+            }).join('');
+        } catch {}
+    }
+
+    // ── Heron detections ─────────────────────────────────────────────
+    async function updateHeronDetections() {
+        try {
+            const r = await fetch('/api/heron-detections?limit=30');
+            const dets = await r.json();
+
+            document.getElementById('badge-herons').textContent = dets.length;
+
+            if (dets.length > previousHeronCount && previousHeronCount > 0) {
+                toast('Heron detected!', 'error', 5000);
             }
+            previousHeronCount = dets.length;
+
+            const list = document.getElementById('heron-det-list');
+            if (!dets.length) {
+                list.innerHTML = '<div class="empty"><div class="empty-icon">🦅</div>No herons detected yet</div>';
+                return;
+            }
+
+            list.innerHTML = dets.map(d => {
+                const pct = (d.confidence * 100).toFixed(1);
+                const barClass = d.confidence >= 0.8 ? 'high' : d.confidence < 0.65 ? 'low' : '';
+                return `
+                    <div class="det-item">
+                        <div class="det-label">Heron</div>
+                        <div class="conf-bar-wrap">
+                            <div class="conf-bar-bg">
+                                <div class="conf-bar ${barClass}" style="width:${pct}%"></div>
+                            </div>
+                        </div>
+                        <div class="conf-pct">${pct}%</div>
+                        <div class="det-time">${timeAgo(d.timestamp)}</div>
+                    </div>`;
+            }).join('');
+        } catch {}
+    }
+
+    // ── Unclassified ─────────────────────────────────────────────────
+    async function updateUnclassified() {
+        try {
+            const r = await fetch('/api/unclassified');
+            const dets = await r.json();
+
+            document.getElementById('badge-unclass').textContent = dets.length;
+
+            const list = document.getElementById('unclass-list');
+            if (!dets.length) {
+                list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing unclassified</div>';
+                return;
+            }
+
+            list.innerHTML = dets.map(d => `
+                <div class="det-item">
+                    <div class="det-label" style="color:var(--text-dim)">ID ${d.id}</div>
+                    <div class="conf-bar-wrap" style="font-size:12px; color:var(--text-dim);">unknown object</div>
+                    <div class="det-time">${timeAgo(d.timestamp)}</div>
+                </div>`
+            ).join('');
+        } catch {}
+    }
+
+    // ── Gallery ──────────────────────────────────────────────────────
+    async function updateGallery() {
+        try {
+            const r = await fetch('/api/heron-detections?limit=20');
+            const dets = await r.json();
+
+            document.getElementById('badge-gallery').textContent = dets.length;
+
+            const gallery = document.getElementById('gallery');
+            if (!dets.length) {
+                gallery.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📽️</div>No heron clips yet</div>';
+                return;
+            }
+
+            gallery.innerHTML = dets.map(d => {
+                const pct = (d.confidence * 100).toFixed(1);
+                const fname = d.video_path ? d.video_path.split('/').pop() : null;
+                const mediaTag = fname
+                    ? `<video class="gallery-video" controls preload="none">
+                           <source src="/api/media/${escHtml(fname)}" type="video/mp4">
+                       </video>`
+                    : `<div style="height:120px; display:flex; align-items:center; justify-content:center; color:var(--text-mute); font-size:12px;">No preview</div>`;
+                return `
+                    <div class="gallery-item">
+                        ${mediaTag}
+                        <div class="gallery-meta">
+                            <div class="gallery-conf">${pct}% confident</div>
+                            <div class="gallery-time">${timeAgo(d.timestamp)}</div>
+                        </div>
+                    </div>`;
+            }).join('');
+        } catch {}
+    }
+
+    // ── Trigger deterrent ────────────────────────────────────────────
+    async function triggerDeterrent() {
+        try {
+            const r = await fetch('/api/trigger-deterrent', { method: 'POST' });
+            const d = await r.json();
+            if (d.success) {
+                toast('Deterrent triggered!', 'success');
+            } else {
+                toast('Error: ' + d.error, 'error');
+            }
+        } catch {
+            toast('Failed to trigger deterrent', 'error');
         }
-    </script>
+    }
+
+    // ── Label submission ─────────────────────────────────────────────
+    async function submitLabel() {
+        const id    = document.getElementById('detection-id').value;
+        const label = document.getElementById('label-select').value;
+
+        if (!id) { toast('Please enter a detection ID', 'info'); return; }
+
+        try {
+            const r = await fetch('/api/label', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ detection_id: parseInt(id), label, bboxes: [] })
+            });
+            const d = await r.json();
+            if (d.success) {
+                toast(`Labeled detection ${id} as "${label}"`, 'success');
+                document.getElementById('detection-id').value = '';
+                updateAll();
+            } else {
+                toast('Error: ' + d.error, 'error');
+            }
+        } catch {
+            toast('Failed to submit label', 'error');
+        }
+    }
+
+    // ── Video upload ─────────────────────────────────────────────────
+    async function uploadVideo() {
+        const file = document.getElementById('video-upload').files[0];
+        if (!file) return;
+
+        const progressWrap = document.getElementById('progress-wrap');
+        const progressFill = document.getElementById('progress-fill');
+        const progressLabel = document.getElementById('progress-label');
+        const resultsDiv = document.getElementById('upload-results');
+
+        progressWrap.style.display = 'block';
+        resultsDiv.style.display = 'none';
+        progressLabel.textContent = `Processing ${file.name}…`;
+        progressFill.style.width = '0%';
+
+        const formData = new FormData();
+        formData.append('video', file);
+
+        let progress = 0;
+        const ticker = setInterval(() => {
+            if (progress < 85) {
+                progress += Math.random() * 20;
+                progressFill.style.width = Math.min(progress, 85) + '%';
+            }
+        }, 400);
+
+        try {
+            const r = await fetch('/api/upload-test-video', { method: 'POST', body: formData });
+            clearInterval(ticker);
+            const d = await r.json();
+
+            if (d.success) {
+                progressFill.style.width = '100%';
+                progressLabel.textContent = 'Complete';
+                setTimeout(() => { progressWrap.style.display = 'none'; }, 800);
+
+                resultsDiv.style.display = 'block';
+                document.getElementById('results-text').innerHTML =
+                    `Frames processed: <strong>${d.frames_processed}</strong> &nbsp;·&nbsp; ` +
+                    `Herons detected: <strong style="color:var(--${d.herons_detected > 0 ? 'red' : 'green'})">${d.herons_detected}</strong>`;
+
+                toast(d.herons_detected > 0
+                    ? `Heron detected in test video (${d.herons_detected} detection${d.herons_detected > 1 ? 's' : ''})`
+                    : 'No herons found in test video',
+                    d.herons_detected > 0 ? 'error' : 'success');
+
+                updateAll();
+            } else {
+                clearInterval(ticker);
+                progressWrap.style.display = 'none';
+                toast('Error: ' + d.error, 'error');
+            }
+        } catch {
+            clearInterval(ticker);
+            progressWrap.style.display = 'none';
+            toast('Upload failed — check server logs', 'error');
+        }
+
+        document.getElementById('video-upload').value = '';
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+    function escHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+</script>
 </body>
 </html>
