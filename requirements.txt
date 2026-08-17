@@ -2,15 +2,25 @@
 # FILE: requirements.txt
 # ============================================================
 #
-# NOTE: tflite-runtime is NOT listed here because it must be
-# installed manually from Google's Pi wheel (see setup.sh).
-# Installing it via pip on aarch64 will fail or pull the wrong build.
+# The TFLite runtime is NOT listed here — it is target-specific:
 #
-opencv-python-headless>=4.7.0
-numpy>=1.21.0
-PyYAML>=6.0
+#   Coral Dev Board  sudo apt-get install -y python3-pycoral libedgetpu1-std
+#                    (Mendel 5 also ships python3-tflite-runtime 2.5.0)
+#   Raspberry Pi 4   pip install tflite-runtime
+#
+# Floors are deliberately low. Mendel 5 (Eagle) is Debian 10 with
+# Python 3.7, and its working set is numpy 1.19 / OpenCV 4.5.4 /
+# PyYAML 5.4. Demanding newer versions forces long source builds on
+# the board for no functional gain — nothing here needs them.
+#
+opencv-python-headless>=4.5.4
+numpy>=1.16.0
+PyYAML>=5.4
 flask>=2.2.5
-paho-mqtt>=1.6.1
-Pillow>=9.0.0
-python-dotenv>=0.21.1
 twilio>=8.10.0
+
+# Pinned below 2.0: paho-mqtt 2.x requires a CallbackAPIVersion argument to
+# Client(), which alerts/mqtt_client.py does not pass. Version 2.x raises
+# ValueError at construction, which the MQTT init swallows — silently
+# disabling MQTT rather than failing visibly.
+paho-mqtt>=1.6.1,<2.0

@@ -19,7 +19,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-MIN_FREE_GB = 2.0
+# Disk floor is relative, because partition sizes vary wildly: Mendel puts
+# /home on its own 2 GB partition, so a fixed 2 GB floor could never pass.
+MIN_FREE_GB = 0.5
+MIN_FREE_FRACTION = 0.10
 
 _COLOUR = sys.stdout.isatty() and os.getenv('NO_COLOR') is None
 GREEN = '\033[32m' if _COLOUR else ''
@@ -215,14 +218,29 @@ def check_disk(config):
     total_gb = (stat.f_blocks * stat.f_frsize) / (1024 ** 3)
     used_pct = 100 * (1 - stat.f_bavail / stat.f_blocks) if stat.f_blocks else 0
 
-    detail = f"{free_gb:.1f} GB free of {total_gb:.1f} GB ({used_pct:.0f}% used)"
-    if free_gb < MIN_FREE_GB:
+    # Report the filesystem the media path is really on. On Mendel that is
+    # /home, not /, and confusing the two hides how little headroom there is.
+    mount = _mount_point(probe)
+    floor_gb = max(MIN_FREE_GB, MIN_FREE_FRACTION * total_gb)
+    detail = (f"{free_gb:.1f} GB free of {total_gb:.1f} GB on {mount} "
+              f"({used_pct:.0f}% used)")
+
+    if free_gb < floor_gb:
         return check('disk', False, detail,
-                     f"Below the {MIN_FREE_GB:.0f} GB floor. A full SD card kills the device.",
-                     f"Reduce storage.retention_days in config.yaml (currently "
-                     f"{config.get('storage.retention_days')}), then:",
-                     f"  du -sh {media}/* | sort -h | tail")
+                     f"Below the {floor_gb:.1f} GB floor for this filesystem. "
+                     f"A full card kills the device.",
+                     f"Largest media first:  du -sh {media}/* | sort -h | tail",
+                     f"Then reduce storage.retention_days (currently "
+                     f"{config.get('storage.retention_days')}) and restart.")
     return check('disk', True, detail)
+
+
+def _mount_point(path):
+    """Deepest mount point containing path, so we name the real filesystem."""
+    p = Path(path).resolve()
+    while not p.is_mount() and p != p.parent:
+        p = p.parent
+    return str(p)
 
 
 def check_database(config):
