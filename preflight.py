@@ -178,6 +178,15 @@ def check_audio(wavs, skip_audio):
                  f"— did you hear it?")
 
 
+def _service_is_running():
+    """True if the heron-deterrent service is active — it holds the camera."""
+    try:
+        return subprocess.run(['systemctl', 'is-active', '--quiet', 'heron-deterrent'],
+                              timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def check_camera(config):
     try:
         import cv2
@@ -185,10 +194,30 @@ def check_camera(config):
         return check('camera', False, "opencv not installed",
                      "pip install opencv-python-headless")
 
+    # OpenCV writes V4L2 probe failures straight to stderr, which buries the
+    # PASS/FAIL lines this tool exists to show.
+    try:
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+    except Exception:
+        pass
+
     device_id = config.get('system.camera_device_id', 0)
     cap = cv2.VideoCapture(device_id)
     try:
         if not cap.isOpened():
+            # Only one process can hold a V4L2 device. If our own service has
+            # it, the camera is fine and this is not a fault — saying "FAIL"
+            # here would send you hunting a problem that does not exist.
+            if _service_is_running():
+                print(f"{DIM}[skip] camera       device {device_id} is held by the "
+                      f"running heron-deterrent service{OFF}")
+                print(f"       {DIM}->{OFF} That is expected. To test the device itself:")
+                print(f"       {DIM}->{OFF}   sudo systemctl stop heron-deterrent "
+                      f"&& ./preflight.py")
+                print(f"       {DIM}->{OFF} Or check the live feed: "
+                      f"curl -s localhost:5000/api/system-status")
+                return True
+
             return check('camera', False, f"cannot open device {device_id}",
                          "List devices:      v4l2-ctl --list-devices",
                          "Or check nodes:     ls /dev/video*",
@@ -328,8 +357,12 @@ def main():
         return 1
 
     print(f"{GREEN}{BOLD}All {passed} checks passed.{OFF}")
-    print(f"{DIM}Start it:  sudo systemctl start heron-deterrent{OFF}")
-    print(f"{DIM}Watch it:  sudo journalctl -u heron-deterrent -f{OFF}\n")
+    if _service_is_running():
+        print(f"{DIM}Already running.  Watch it:  "
+              f"sudo journalctl -u heron-deterrent -f{OFF}\n")
+    else:
+        print(f"{DIM}Start it:  sudo systemctl start heron-deterrent{OFF}")
+        print(f"{DIM}Watch it:  sudo journalctl -u heron-deterrent -f{OFF}\n")
     return 0
 
 

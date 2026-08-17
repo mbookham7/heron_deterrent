@@ -127,8 +127,14 @@ Every failure prints the command that fixes it. Do not continue until you see:
 All 7 checks passed.
 ```
 
-Running it by hand will not see `/etc/heron-deterrent.env` — only the service
-does. `export` the variables in your shell if you want to verify SMS manually.
+Two things preflight cannot see when run by hand:
+
+- **The camera, if the service is already running** — only one process can hold
+  `/dev/video0`, so the check reports `[skip] camera ... held by the running
+  service`. That is not a fault. For a full camera test:
+  `sudo systemctl stop heron-deterrent && ./preflight.py`
+- **`/etc/heron-deterrent.env`** — only the service reads it. `export` the
+  variables in your shell if you want to verify SMS manually.
 
 ---
 
