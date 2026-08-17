@@ -220,6 +220,12 @@ class ObjectDetector:
         The resulting bbox is (x, y, w, h) normalized 0-1 against the ORIGINAL
         frame, corner origin — the same units and layout as before, now
         measured against the frame the caller actually handed in.
+
+        Assumes the model's box outputs are normalized 0-1 against its input,
+        which is what the CPU int8 model emits. The compiled Edge TPU model
+        reportedly emits pixel units instead (see README, "Edge TPU status") —
+        if that target is ever revived, check this before trusting a box from
+        it. It detects nothing at all today, so the point is moot.
         """
         if not detections:
             return detections
