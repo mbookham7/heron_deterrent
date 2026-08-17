@@ -1,362 +1,283 @@
 # Heron Deterrent System
 
-An edge AI system that watches a live camera feed, detects herons, plays a deterrent sound to scare them away, and sends SMS alerts — all running locally on a Coral Dev Board.
+An edge AI system that watches a live camera feed, detects herons with a YOLOv8
+TFLite model, plays a deterrent sound to scare them away, and raises SMS and
+MQTT alerts — all running locally on a Coral Dev Board or a Raspberry Pi 4.
 
-> **Running on a Raspberry Pi 4 instead?** See the [Raspberry Pi 4 Setup Guide](docs/raspberry_pi4_setup.md).
+**Deploying at the pond? Go straight to [DEPLOY.md](DEPLOY.md).** This file is
+the reference; that one is the checklist.
 
 ---
 
 ## How It Works
 
 ```
-Camera → Motion Detection → AI Inference (Edge TPU) → Deterrent Sound
-                                      ↓
-                              SQLite Database
-                                      ↓
-                         Web Dashboard  +  SMS Alert
+Camera (5 fps) → Motion detection → Inference on the trigger frame
+                                            │
+                        heron ──────────────┤────────────── not heron
+                          │                                     │
+                  Deterrent sound FIRST                  Capture clip,
+                          │                              re-check 5 key frames
+                  Capture clip, save                            │
+                          │                                     │
+                  SQLite ── Dashboard ── SMS / MQTT      "Unclassified" panel
 ```
 
-1. The camera runs continuously at 5 fps
-2. Background subtraction filters frames for motion
-3. When motion is detected and the cooldown has elapsed, a 5-second clip is captured
-4. The clip's key frames are run through a YOLOv8 TFLite model on the Edge TPU
-5. If a heron is detected above the confidence threshold, the deterrent sound plays and an alert is created
-6. The web dashboard shows the live stream, detection history, and gallery of heron clips
+The ordering matters. Inference runs on the frame that triggered the motion, so
+the speaker fires about **1 second** after the bird appears. An earlier version
+captured a five-second clip first and took **9.6 seconds** — by which time the
+heron had usually left.
+
+If the trigger frame is inconclusive, the system falls back to capturing a clip
+and scoring five key frames, so a bird caught mid-wingbeat is not written off.
 
 ---
 
-## Features
+## Measured performance
 
-- Real-time motion detection with configurable sensitivity
-- YOLOv8 TFLite inference accelerated by the Coral Edge TPU
-- Random deterrent WAV file playback via ALSA
-- Web dashboard: live stream, stats, alert feed, heron gallery
-- SMS notifications via Twilio (throttled to avoid spam)
-- Optional MQTT publishing for IoT integrations
-- Manual labelling tool to build a training dataset
-- Automatic cleanup of old videos and database records
-- Auto-start on boot via systemd
+All figures measured on a Coral Dev Board (Mendel 5, quad Cortex-A53), CPU
+inference, 640×640 model:
+
+| Metric | Value |
+|---|---|
+| Inference | 920 ms/frame |
+| Motion → deterrent sound | **1.02 s** |
+| Recall @ `confidence_threshold: 0.75` | 96% over 80 dataset images |
+| Non-heron frames | mostly 0.15–0.33, occasional spikes to ~0.70 |
+| Saved clip size | 117 KB (5 s, 640×480) |
+| Resident memory | ~110 MB |
+
+---
+
+## Edge TPU status — read this before buying hardware for it
+
+**The Edge TPU is not currently usable, and it is the model's fault, not the
+board's.** `ai.target: edgetpu` loads and runs at 87 ms/frame, but detects
+nothing: full-integer quantisation destroyed the model's classification head, so
+every one of the 8,400 anchors scores about `1e-5`. The bounding-box outputs also
+come back in pixel units rather than normalised, unlike the CPU model.
+
+The hardware itself is healthy — an older compiled model runs on the same TPU at
+3 ms/frame.
+
+Fixing it requires re-quantising with better calibration and recompiling with
+`edgetpu_compiler`, which only runs on x86-64 Linux. Until someone does that,
+**use `ai.target: cpu` on both boards.** A Coral runs CPU inference perfectly
+well; it is simply not using its accelerator.
 
 ---
 
 ## Hardware
 
-| Component | Recommended |
+| Component | Notes |
 |---|---|
-| Board | Google Coral Dev Board (built-in Edge TPU) |
-| Camera | USB webcam 720p or higher |
-| Speaker | USB or 3.5mm powered speaker |
-| Storage | MicroSD ≥ 16 GB (32 GB recommended) |
-| Power | USB-C 5V/3A supply |
-| Network | Ethernet or Wi-Fi |
+| Board | Coral Dev Board or Raspberry Pi 4 (2 GB+) |
+| Camera | USB webcam, 640×480 is plenty |
+| Speaker | Powered USB or 3.5 mm speaker — the deterrent is the whole point |
+| Storage | MicroSD ≥ 16 GB |
+| Power | The board's rated supply; brownouts show up as camera dropouts |
+| Network | Wi-Fi or Ethernet. Optional — detection works offline |
 
 ---
 
-## Step 1 — Flash the Coral Dev Board
+## Configuration
 
-If your board is freshly unboxed or needs a clean OS, flash Mendel Linux first.
-
-**Full flashing instructions:** [docs/coral_dev_board_flash_guide.md](docs/coral_dev_board_flash_guide.md)
-
-In brief:
-
-```bash
-# On your host machine — download the Mendel Linux flash package
-mkdir ~/coral-flash && cd ~/coral-flash
-# Visit https://coral.ai/software/#mendel-linux and download the latest Enterprise Eagle zip
-
-# Short the two boot pins on the board, connect USB-C, apply power, remove short
-fastboot devices          # should list your board
-
-# Extract the downloaded zip, then:
-chmod +x flash.sh
-sudo ./flash.sh           # takes 5–10 minutes
-```
-
-After flashing, connect with MDT:
-
-```bash
-pip3 install mendel-development-tool
-mdt devices               # wait ~3 min for first boot
-mdt shell                 # opens a shell on the board
-```
-
----
-
-## Step 2 — First-Boot Board Setup
-
-Inside the board shell:
-
-```bash
-# Update system packages
-sudo apt-get update && sudo apt-get upgrade -y
-
-# Set your timezone
-sudo timedatectl set-timezone Europe/London
-
-# Connect to Wi-Fi (or use Ethernet — skip if already connected)
-nmcli device wifi connect "YOUR_SSID" password "YOUR_PASSWORD"
-
-# Verify Edge TPU is present
-lspci -nn | grep 089a
-# Expected: 01:00.0 System peripheral: Global Unichip Corp. Coral Edge TPU [1ac1:089a]
-```
-
----
-
-## Step 3 — Install System Dependencies
-
-```bash
-sudo apt-get install -y \
-    python3-pip \
-    python3-venv \
-    python3-opencv \
-    alsa-utils \
-    v4l-utils \
-    libportaudio2 \
-    libatlas-base-dev \
-    libjpeg-dev \
-    libopenjp2-7 \
-    sqlite3 \
-    git
-
-# Install Edge TPU runtime and PyCoral
-echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" \
-    | sudo tee /etc/apt/sources.list.d/coral-edgetpu.list
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-sudo apt-get update
-sudo apt-get install -y libedgetpu1-std python3-pycoral
-```
-
----
-
-## Step 4 — Clone the Repository
-
-```bash
-cd ~
-git clone https://github.com/mbookham7/heron_deterrent.git
-cd heron_deterrent
-```
-
----
-
-## Step 5 — Create a Virtual Environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Install tflite-runtime (PyCoral provides this on Mendel Linux)
-# If not already available via python3-pycoral:
-pip install tflite-runtime
-```
-
----
-
-## Step 6 — Add Your Model
-
-Place your trained YOLOv8 TFLite model in the `models/` directory.
-The Coral requires the **Edge TPU compiled** variant (the `_edgetpu.tflite` file):
-
-```bash
-mkdir -p models
-cp /path/to/best_int8_edgetpu.tflite models/best_int8_edgetpu.tflite
-```
-
-Update `config.yaml` to point at it:
+`config.yaml` in full. **`ai.target` is the only hardware switch**, and it names
+the inference *backend*, not the board:
 
 ```yaml
 ai:
-  model_path: "./models/best_int8_edgetpu.tflite"
-  use_edge_tpu: true
-```
-
-> **Don't have a model yet?** See [Training Your Model](#training-your-model) below.
-
----
-
-## Step 7 — Add Deterrent Sounds
-
-Place `.wav` audio files in the `sounds/` directory. The system picks one at random each time a heron is detected.
-
-```bash
-mkdir -p sounds
-cp /path/to/your/*.wav sounds/
-```
-
-Any WAV file works — predator calls, distress sounds, loud bangs, etc.
-
----
-
-## Step 8 — Configure the System
-
-Edit `config.yaml`. Key settings:
-
-```yaml
-motion:
-  sensitivity: 5000          # Lower = more sensitive. Start here and tune.
-  cooldown_seconds: 10       # Minimum gap between triggers
-
-ai:
-  confidence_threshold: 0.6  # Raise this if you get false positives
-  model_path: "./models/best_int8_edgetpu.tflite"
-  use_edge_tpu: true
+  target: cpu                  # "cpu" or "edgetpu" — see Edge TPU status above
+  confidence_threshold: 0.75
+  num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:
-    0: "heron"               # Must match your model's class order
-    1: "cat"
-    2: "dog"
-    3: "bird"
-    4: "person"
-
-system:
-  active_hours:
-    start: "06:00"           # Only monitor between these hours
-    end: "20:00"
-  camera_device_id: 0        # Run `v4l2-ctl --list-devices` to find yours
-  frame_rate: 5
-  resolution:
-    width: 640
-    height: 480
-  running_on_raspberry_pi: false
-
-storage:
-  retention_days: 365
-  media_path: "./media/"
-  db_path: "./data/heron.db"
+    0: "heron"                 # single-class model; more entries fail at startup
 ```
 
-**Do not store Twilio credentials in `config.yaml`** — use environment variables instead:
+| `ai.target` | Model file | Backend |
+|---|---|---|
+| `cpu` | `models/heron_cpu_int8.tflite` | `tflite-runtime`, either board |
+| `edgetpu` | `models/heron_edgetpu.tflite` | Edge TPU delegate, Coral only |
+
+There is deliberately **no `model_path` key**. The filename is derived from the
+target, so config cannot point at a file that does not exist. To trial a
+different model, rename a file in `models/`.
+
+### The model is single-class
+
+Both training configs are `nc: 1, names: [heron]`, and every exported model
+emits `[1, 5, N]` — that is 4 bbox coordinates plus **one** class score. An
+earlier config declared five classes (`heron, cat, dog, bird, person`), which
+was silently unreachable: `argmax` over a length-1 array is always 0.
+
+`ai.labels` must therefore have exactly one entry. A mismatch raises
+`ClassCountMismatch` at startup rather than mislabelling detections.
+
+The dashboard's manual-labelling form is a **separate vocabulary** — it lets you
+tag an "unknown" clip as cat, dog, bird or person to triage footage. Those are
+human triage labels, not model classes. Only heron-tagged images get a YOLO
+annotation; anything else is written as a background example (empty label file).
+
+### Full configuration reference
+
+| Key | Default | Description |
+|---|---|---|
+| `motion.sensitivity` | `5000` | Minimum contour area to trigger. Lower = more sensitive |
+| `motion.cooldown_seconds` | `10` | Minimum gap between detection events |
+| `ai.target` | `cpu` | `cpu` or `edgetpu` — the only hardware switch |
+| `ai.confidence_threshold` | `0.75` | Measured: 96% recall, clear of non-heron spikes |
+| `ai.num_threads` | `4` | CPU threads; ignored on `edgetpu` |
+| `ai.labels` | `{0: heron}` | Must match the model's class count exactly |
+| `alert.sms_enabled` | `false` | Needs `/etc/heron-deterrent.env` (see below) |
+| `alert.sms_throttle_minutes` | `15` | Minimum gap between SMS messages |
+| `audio.volume` | `80` | Percent, applied via `amixer` |
+| `audio.sound_path` | `./sounds/` | Startup **fails** if this has no `.wav` files |
+| `storage.retention_days` | `365` | Age-based deletion |
+| `storage.max_media_gb` | `1.0` | **Hard size cap.** Oldest clips deleted first |
+| `storage.media_path` | `./media/` | Clips, grouped by label |
+| `storage.db_path` | `./data/heron.db` | SQLite database |
+| `mqtt.enabled` | `false` | Optional MQTT publishing |
+| `mqtt.broker` | `localhost` | Broker hostname. Connects asynchronously, retries forever |
+| `mqtt.port` | `1883` | Broker port |
+| `system.active_hours.start/end` | `06:00`/`20:00` | Handles windows spanning midnight |
+| `system.camera_device_id` | `0` | V4L2 device number |
+| `system.frame_rate` | `5` | Capture rate, and the rate clips are written at |
+
+### Why there is a size cap as well as retention
+
+Retention by age cannot protect a small card. Clips are 117 KB, so at 100 events
+per day a 2 GB partition fills in about four months — long before a 365-day
+cutoff deletes anything. A windy pond with a 10-second cooldown can generate far
+more than 100 events a day.
+
+`storage.max_media_gb` is the backstop that actually bounds growth: oldest files
+go first, checked every five minutes, covering `labeled/` as well as the clip
+directories.
+
+> On the Coral, `/home` is a **separate 2 GB partition** and the repo lives
+> there. `df -h /` showing plenty of space is misleading — check `df -h /home`.
+
+### Secrets
+
+Twilio credentials are read **only** from environment variables. There are no
+`twilio_*` keys in `config.yaml`, so they cannot be committed by accident.
+
+Put them in a root-owned file outside the repo, which the service unit reads:
 
 ```bash
-export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export TWILIO_AUTH_TOKEN="your_auth_token"
-export TWILIO_FROM_NUMBER="+441234567890"
-export TWILIO_TO_NUMBER="+441234567890"
-```
-
-Then enable SMS in `config.yaml`:
-
-```yaml
-alert:
-  sms_enabled: true
-  sms_throttle_minutes: 15
-```
-
----
-
-## Step 9 — Test the Camera and Audio
-
-```bash
-# List connected cameras
-v4l2-ctl --list-devices
-
-# Preview a frame (saves to disk)
-python3 -c "
-import cv2
-cap = cv2.VideoCapture(0)
-ret, frame = cap.read()
-cv2.imwrite('test_frame.jpg', frame)
-cap.release()
-print('Frame saved' if ret else 'FAILED — check camera_device_id')
-"
-
-# List audio devices
-aplay -l
-
-# Test speaker output
-speaker-test -t wav -c 2
-
-# Test a WAV file directly
-aplay sounds/your_sound.wav
-```
-
----
-
-## Step 10 — Run Manually (Test First)
-
-```bash
-source venv/bin/activate
-START_WEB_UI=true python main.py
-```
-
-Open the web dashboard in your browser at `http://<board-ip>:5000`
-
-Check the logs for any errors:
-
-```
-tail -f heron_deterrent.log
-```
-
----
-
-## Step 11 — Run as a Service (Auto-start on Boot)
-
-Once you're happy the system works, install it as a systemd service so it starts automatically and restarts if it crashes.
-
-```bash
-# Edit the service file and verify the paths match your setup
-nano heron-deterrent.service
-
-# The key lines to check:
-#   User=mendel                             (Mendel Linux default user)
-#   WorkingDirectory=/home/mendel/heron_deterrent
-#   ExecStart=/home/mendel/heron_deterrent/venv/bin/python main.py
-
-# Install and enable
-sudo cp heron-deterrent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable heron-deterrent
-sudo systemctl start heron-deterrent
-
-# Check it started correctly
-sudo systemctl status heron-deterrent
-
-# Follow logs in real time
-sudo journalctl -u heron-deterrent -f
-```
-
-To pass environment variables (e.g. Twilio) to the service, uncomment and fill in the `Environment=` lines in `heron-deterrent.service`:
-
-```ini
-Environment="TWILIO_ACCOUNT_SID=ACxxxx"
-Environment="TWILIO_AUTH_TOKEN=xxxx"
-Environment="TWILIO_FROM_NUMBER=+441234567890"
-Environment="TWILIO_TO_NUMBER=+441234567890"
-```
-
-Then reload:
-
-```bash
-sudo systemctl daemon-reload
+sudo install -m 600 -o root -g root /dev/null /etc/heron-deterrent.env
+sudo tee /etc/heron-deterrent.env >/dev/null <<'EOF'
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_auth_token
+TWILIO_FROM_NUMBER=+441234567890
+TWILIO_TO_NUMBER=+441234567890
+EOF
 sudo systemctl restart heron-deterrent
 ```
+
+Then set `alert.sms_enabled: true`. Do **not** put credentials in
+`Environment=` lines in `heron-deterrent.service` — that file is tracked in git.
+
+If SMS is enabled but the variables are missing, the system logs a warning and
+runs without SMS. Losing alerts is bad; losing the deterrent because alerting is
+misconfigured would be worse.
+
+---
+
+## preflight.py
+
+One command that checks everything before you start the service. Run it on the
+board, from the repo root:
+
+```bash
+./preflight.py                # all checks, plays a deterrent sound
+./preflight.py --skip-audio   # same, but stay quiet
+```
+
+```
+[PASS] config       ai.target=cpu  confidence=0.75  classes=1
+[PASS] model        heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
+[skip] edgetpu      ai.target is not 'edgetpu'
+[PASS] sounds       1 file(s), 172 KB: startle_default.wav
+[PASS] audio        played startle_default.wav on edgetpu-audio-card — did you hear it?
+[PASS] camera       device 0 returned a 640x480 frame
+[PASS] disk         1.5 GB free of 1.9 GB on /home (23% used)
+[PASS] database     data/heron.db writable (24 KB)
+[skip] sms          alert.sms_enabled is false
+All 7 checks passed.
+```
+
+Every failure prints the command that fixes it. Exit status is 0 only when
+everything passes, so it can gate a deploy script.
+
+Note that `preflight.py` run by hand will **not** see credentials from
+`/etc/heron-deterrent.env` — only the service reads that. `export` them in your
+shell to check the SMS leg manually.
+
+---
+
+## Deterrent sounds
+
+`sounds/` must contain at least one `.wav` file or **the system refuses to
+start**. A silent deterrent is the one failure mode that defeats the whole build
+while looking perfectly healthy, so it is a hard error rather than a warning.
+
+The repo ships `sounds/startle_default.wav` as a floor — three sharp broadband
+bursts with a 2 ms attack plus a descending screech, generated with the Python
+standard library. A sudden broadband transient is what actually startles birds.
+Replace or supplement it with real heron distress calls or an air horn; one file
+is picked at random per trigger.
+
+---
+
+## Field robustness
+
+Things that were specifically hardened for running unattended outdoors:
+
+- **Camera dropouts.** Health is judged on consecutive read failures, not on
+  `isOpened()`, which commonly stays `True` through a USB brownout while every
+  read fails. Reconnection backs off from 1 s to 60 s.
+- **Thread safety.** The TFLite interpreter and the camera are each behind a
+  lock. Both are reachable from the detection threads and the dashboard at once,
+  and concurrent access to either is undefined behaviour.
+- **Memory.** Motion events are dropped, not queued, when both detection slots
+  are busy. Each queued event holds ~22 MB of frames.
+- **Network.** Twilio calls time out after 10 seconds. MQTT connects
+  asynchronously and retries indefinitely with backoff, so an unreachable broker
+  never blocks startup or the detection loop.
+- **Logs.** `heron_deterrent.log` rotates at 10 MB × 3 — a 40 MB hard ceiling.
+- **Restart.** systemd restarts on failure after 10 s, giving up after 5 failures
+  in 2 minutes so a config error is visible in `systemctl status` rather than
+  looping forever in the journal.
 
 ---
 
 ## Web Dashboard
 
-Access at `http://<board-ip>:5000`
+At `http://<board-ip>:5000`.
 
 | Section | Description |
 |---|---|
-| Stats strip | Herons today, total detections, last detection time, alert count |
-| Live Feed | MJPEG stream from the camera with system status overlay |
-| Recent Alerts | Feed of CRITICAL / WARNING alerts with timestamps |
-| Heron Detections | Detection history with confidence bars |
-| Unclassified | Objects the model returned "unknown" for — label them to build a dataset |
-| Heron Gallery | Video clips of confirmed heron detections |
-| Test Upload | Upload a video file to run inference against — useful for tuning the model |
+| Stats strip | Herons today, total detections, last detection, alert count |
+| Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection |
+| Recent Alerts | CRITICAL and WARNING alerts with timestamps |
+| Heron Detections | History with confidence bars |
+| Unclassified | Clips the model returned "unknown" for — label them to build a dataset |
+| Heron Gallery | Confirmed heron clips |
+| Test Upload | Upload a video to run inference against — the quickest end-to-end proof |
 
----
+> Every inconclusive motion event creates a WARNING "unknown" alert and saves a
+> clip. That is deliberate — it feeds the Unclassified panel — but at a busy pond
+> the alert feed gets noisy. Raise `motion.sensitivity` if so.
 
-## API Reference
+The Flask server is the development server. That is fine on a private LAN; do
+not expose it to the internet.
+
+### API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/live-stream` | MJPEG video stream |
+| GET | `/api/live-stream` | MJPEG video stream (2 fps) |
 | GET | `/api/system-status` | System health JSON |
 | GET | `/api/alerts` | Recent alerts (param: `limit`) |
 | GET | `/api/detections` | Detection history (params: `label`, `limit`) |
@@ -364,73 +285,55 @@ Access at `http://<board-ip>:5000`
 | GET | `/api/unclassified` | Unlabelled detections |
 | POST | `/api/label` | Submit a manual label `{detection_id, label, bboxes}` |
 | POST | `/api/trigger-deterrent` | Manually fire the deterrent sound |
-| POST | `/api/upload-test-video` | Run inference on an uploaded video file |
-| GET | `/api/media/<filename>` | Serve a stored video clip |
+| POST | `/api/upload-test-video` | Run inference on an uploaded video |
+| GET | `/api/media/<filename>` | Serve a stored clip |
+
+> `POST /api/config` exists but is **not safe to call**: it rewrites
+> `config.yaml` from the posted JSON, and since the GET strips the `alert`
+> section, a round trip deletes it along with every comment. The dashboard never
+> calls it. Edit `config.yaml` directly instead.
 
 ---
 
-## Configuration Reference
+## Installation
 
-| Key | Default | Description |
-|---|---|---|
-| `motion.sensitivity` | `5000` | Minimum contour area to trigger motion. Lower = more sensitive. |
-| `motion.cooldown_seconds` | `10` | Seconds between detection events |
-| `ai.confidence_threshold` | `0.6` | Minimum confidence score to accept a detection |
-| `ai.use_edge_tpu` | `true` | Use the Coral Edge TPU (set `false` for Raspberry Pi CPU) |
-| `ai.num_threads` | `4` | CPU threads for TFLite (ignored when Edge TPU is used) |
-| `ai.labels` | see config | Map of class index → label name — must match your model |
-| `alert.sms_enabled` | `false` | Enable Twilio SMS alerts |
-| `alert.sms_throttle_minutes` | `15` | Minimum gap between SMS messages |
-| `system.active_hours.start` | `06:00` | Start of monitoring window |
-| `system.active_hours.end` | `20:00` | End of monitoring window |
-| `system.camera_device_id` | `0` | V4L2 device number |
-| `system.frame_rate` | `5` | Camera capture rate (fps) |
-| `storage.retention_days` | `365` | Days before old records and videos are deleted |
-
----
-
-## Training Your Model
-
-The system includes a manual labelling workflow to build a training dataset from footage captured in the field.
-
-### 1. Collect data
-
-Run the system for a few days. Any detection saved as "unknown" is available in the **Unclassified** panel on the dashboard. Label each one using the form — this writes YOLO-format annotation files to `media/labeled/`.
-
-### 2. Train
+Full step-by-step for both boards is in **[DEPLOY.md](DEPLOY.md)**. The short
+version:
 
 ```bash
-# On a machine with a GPU
-pip install ultralytics
+git clone https://github.com/mbookham7/heron_deterrent.git
+cd heron_deterrent
+./setup.sh                    # system packages, venv, default config
 
-# Train YOLOv8 nano (fast) — adjust data path and epochs as needed
-yolo detect train \
-    data=dataset.yaml \
-    model=yolov8n.pt \
-    epochs=100 \
-    imgsz=640
+# Models are gitignored — copy them in by hand
+cp /path/to/heron_cpu_int8.tflite models/
+
+./preflight.py                # must pass before you start
+START_WEB_UI=true python main.py
 ```
 
-### 3. Export for Edge TPU (Coral Dev Board)
+### Python environment notes
+
+**Coral / Mendel 5 (Eagle)** is Debian 10 with **Python 3.7**, OpenCV 4.5.4 and
+numpy 1.19. `requirements.txt` floors are set low deliberately — demanding newer
+versions triggers long source builds on the board for no functional gain.
+
+The venv **must** be created with `--system-site-packages` on Mendel:
 
 ```bash
-# Export to int8 TFLite first
-yolo export \
-    model=runs/detect/train/weights/best.pt \
-    format=tflite \
-    int8=True
-
-# Then compile for Edge TPU using the Coral compiler
-# Install: https://coral.ai/docs/edgetpu/compiler/
-edgetpu_compiler best_int8.tflite
-
-# This produces best_int8_edgetpu.tflite — copy to the board
-scp best_int8_edgetpu.tflite mendel@<board-ip>:~/heron_deterrent/models/
+python3 -m venv --system-site-packages venv
 ```
 
-### 4. Export for CPU (Raspberry Pi 4)
+Mendel's `python3-tflite-runtime` (2.5.0.post1) is version-matched to
+`libedgetpu 16.0`. **Do not `pip install tflite-runtime` on Mendel** — the pip
+build targets a newer TFLite and segfaults when the Edge TPU delegate constructs
+an Interpreter. `setup.sh` handles this automatically.
 
-If you're deploying to a Pi 4 instead, skip the `edgetpu_compiler` step and use `best_int8.tflite` directly.
+**Raspberry Pi 4** uses a plain venv plus `pip install tflite-runtime`.
+
+`paho-mqtt` is pinned below 2.0: version 2.x requires a `CallbackAPIVersion`
+argument that `alerts/mqtt_client.py` does not pass, and the resulting
+`ValueError` gets swallowed, silently disabling MQTT.
 
 ---
 
@@ -438,44 +341,42 @@ If you're deploying to a Pi 4 instead, skip the `edgetpu_compiler` step and use 
 
 ```
 heron_deterrent/
-├── main.py                       # System orchestrator
+├── main.py                       # Orchestrator: pipeline, health, cleanup
+├── preflight.py                  # Pre-start checks — run this at the pond
 ├── config.yaml                   # All configuration
 ├── requirements.txt              # Python dependencies
-├── heron-deterrent.service       # Systemd service unit
-├── setup.sh                      # Automated setup script
+├── heron-deterrent.service       # Systemd unit
+├── setup.sh                      # Automated setup
 │
 ├── ai/
-│   ├── detector.py               # YOLOv8/v5 TFLite inference + NMS
-│   └── model_loader.py           # TFLite + Edge TPU model loader
+│   ├── detector.py               # YOLOv8 TFLite inference + NMS
+│   └── model_loader.py           # Target → model file → backend
 │
 ├── capture/
-│   ├── camera.py                 # OpenCV camera wrapper
+│   ├── camera.py                 # Locked, self-healing camera wrapper
 │   └── motion_detector.py        # MOG2 background subtraction
 │
 ├── deterrent/
-│   └── audio_player.py           # ALSA audio playback
+│   └── audio_player.py           # ALSA playback; fails loudly if silent
 │
 ├── storage/
 │   ├── database.py               # SQLite (thread-safe)
-│   └── media_store.py            # Video/image file management
+│   └── media_store.py            # Clips, retention, size cap
 │
 ├── alerts/
 │   ├── alert_manager.py          # SMS + MQTT orchestration
-│   └── mqtt_client.py            # Paho MQTT client with reconnection
+│   └── mqtt_client.py            # Paho client with indefinite backoff
 │
 ├── ui/
 │   ├── app.py                    # Flask REST API
-│   └── templates/
-│       └── index.html            # Web dashboard
+│   └── templates/index.html      # Dashboard
 │
-├── utils/
-│   └── config_loader.py          # YAML config loader
+├── utils/config_loader.py        # YAML config loader
 │
-├── models/                       # Place your .tflite model here
-├── sounds/                       # Place your .wav deterrent files here
+├── models/                       # *.tflite — gitignored, copy in by hand
+├── sounds/                       # *.wav — at least one required
 ├── media/                        # Auto-created: heron/, other/, unknown/, labeled/
 ├── data/                         # Auto-created: heron.db
-│
 └── docs/
     ├── coral_dev_board_flash_guide.md
     └── raspberry_pi4_setup.md
@@ -483,83 +384,110 @@ heron_deterrent/
 
 ---
 
+## Training and exporting a model
+
+The dataset and training pipeline live in sibling repositories
+(`heron-data`, `heron-detector`). Current weights:
+`heron-detector/runs/detect/heron_v8_model-4/weights/best.pt` (May 2026).
+
+### Export for CPU (both boards)
+
+```bash
+yolo export model=best.pt format=tflite int8=True imgsz=640 data=your_data.yaml
+# produces best_saved_model/best_int8.tflite
+cp best_saved_model/best_int8.tflite models/heron_cpu_int8.tflite
+```
+
+`int8=True` gives int8 weights with float32 input and output. That is what the
+CPU target expects, and it is ~3.3 MB versus 12 MB for float32.
+
+### Export for Edge TPU (currently broken — see above)
+
+Full-integer quantisation (uint8 in and out) is required by
+`edgetpu_compiler`, and it is that step which destroyed the classification head
+in the current model. If you attempt it, **validate detection scores on real
+images before deploying**, not just that the file loads:
+
+```bash
+edgetpu_compiler -s best_full_integer_quant.tflite
+cp best_full_integer_quant_edgetpu.tflite models/heron_edgetpu.tflite
+```
+
+### A note on resolution
+
+A 320×320 export runs 4× faster (220 ms vs 920 ms on the Coral) but measured
+**10 points lower recall** — 86% vs 96% at threshold 0.75, with distant birds
+worst affected. Since inference now happens on the trigger frame, 640 is fast
+enough, so the resolution is not worth trading.
+
+### Collecting more training data
+
+The model was trained on ~180 close-up heron images with **no negative
+examples**, which is why non-heron frames occasionally spike to 0.70. The most
+valuable thing you can add is negatives from your own pond: water ripple,
+ducks, foliage, moving shade. Label them via the dashboard's Unclassified panel
+and they are written to `media/labeled/` in YOLO format.
+
+---
+
 ## Troubleshooting
+
+Run `./preflight.py` first — it diagnoses most of this and prints the fix.
+
+### No detections at all
+
+1. Is the current time inside `active_hours`?
+2. Lower `motion.sensitivity` (try `2000`)
+3. Lower `ai.confidence_threshold` (try `0.6`, accepting more false positives)
+4. Upload a clip via the dashboard's Test Upload to confirm inference works
+5. `sudo journalctl -u heron-deterrent -f`
+
+### False triggers
+
+Raise `ai.confidence_threshold` toward `0.85`. Recall falls to about 72% at that
+point, so prefer collecting negative training images instead.
+
+### Model will not load
+
+The error names the fix. Most often the model is missing — they are gitignored,
+so a fresh clone has none. On Mendel, a segfault here means pip's
+`tflite-runtime` is shadowing the system one: `pip uninstall tflite-runtime` and
+ensure the venv has `include-system-site-packages = true`.
 
 ### Camera not detected
 
 ```bash
-# List all V4L2 devices
 v4l2-ctl --list-devices
-
-# Test opening device 0
-python3 -c "import cv2; cap=cv2.VideoCapture(0); print(cap.isOpened()); cap.release()"
-
-# If the wrong device is used, update camera_device_id in config.yaml
+ls /dev/video*
+sudo fuser -v /dev/video0        # something else holding it?
 ```
 
-### No sound / audio silent
+Repeated reconnects usually mean USB power, not a bad camera. Use a powered hub.
+
+### No sound
 
 ```bash
-# List audio output devices
-aplay -l
-
-# Test speaker
+aplay -l                          # list devices
 speaker-test -t wav -c 2
-
-# Check which mixer control applies (Coral may use a different name)
-amixer
-# Note the control name shown, update audio player if needed
+amixer                            # find the right control name
 ```
 
 ### Edge TPU not detected
 
 ```bash
-# Check PCIe
 lspci -nn | grep 089a
-
-# Check kernel driver
 dmesg | grep apex
-
-# Reinstall runtime
-sudo apt-get install --reinstall libedgetpu1-std
-
-# Verify Python can load it
 python3 -c "from pycoral.utils.edgetpu import list_edge_tpus; print(list_edge_tpus())"
 ```
 
-### Model outputs wrong classes
-
-Edit the `ai.labels` section in `config.yaml` to match the class order your model was trained with. The indices must map exactly to what's in your `data.yaml` training file.
-
-### System starts but no detections
-
-1. Check `active_hours` — is the current time within the window?
-2. Lower `motion.sensitivity` (e.g. try `2000`)
-3. Lower `ai.confidence_threshold` (e.g. try `0.4`)
-4. Watch the logs: `sudo journalctl -u heron-deterrent -f`
-5. Upload a test video via the dashboard to confirm inference is working
-
-### Disk space warning
+### Disk filling
 
 ```bash
-df -h
-# The system warns when free space drops below 1 GB
-
-# Manually trigger a cleanup
-sqlite3 data/heron.db "DELETE FROM detections WHERE timestamp < datetime('now', '-30 days');"
-
-# Or reduce retention_days in config.yaml and restart
+df -h /home                       # on Coral this is a separate 2 GB partition
+du -sh media/* | sort -h | tail
 ```
 
----
-
-## Raspberry Pi 4
-
-If you need to run this on a Raspberry Pi 4 (no built-in Edge TPU), see the dedicated setup guide:
-
-**[docs/raspberry_pi4_setup.md](docs/raspberry_pi4_setup.md)**
-
-Key differences are: `use_edge_tpu: false`, `running_on_raspberry_pi: true`, a different tflite-runtime install method, and a slower inference rate due to CPU-only execution.
+Lower `storage.max_media_gb`. The cap is enforced every five minutes.
 
 ---
 

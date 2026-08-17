@@ -13,10 +13,10 @@ This guide covers setting up the Heron Deterrent System on a **Raspberry Pi 4**.
 |---|---|---|
 | Edge TPU | Built-in (M.2) | None built-in |
 | AI inference | Edge TPU (~10 ms/frame) | CPU only (~200–400 ms/frame) |
-| TFLite model | `_edgetpu.tflite` required | Standard `_int8.tflite` |
+| TFLite model | `heron_edgetpu.tflite` | `heron_cpu_int8.tflite` |
 | OS | Mendel Linux | Raspberry Pi OS (Bookworm) |
 | Audio mixer | Varies | `PCM` or `Headphone` (3.5mm jack) |
-| Config flag | `use_edge_tpu: true` | `use_edge_tpu: false` |
+| Config flag | `ai.target: edgetpu` | `ai.target: cpu` |
 
 Because the Pi 4 has no Edge TPU, inference runs on the 4-core ARM CPU. Expect roughly 2–5 fps of inference throughput on a typical YOLOv8n int8 model. The system compensates by running at 5 fps capture and analysing only key frames from each clip.
 
@@ -148,19 +148,19 @@ python3 -c "import tflite_runtime.interpreter; print('tflite-runtime OK')"
 
 ## Step 6 — Add Your Model
 
-The Pi 4 uses the **standard int8 TFLite model**, not the Edge TPU compiled variant. If you exported using Ultralytics:
+The Pi 4 uses the CPU model. Note that the Coral currently uses the same one —
+the Edge TPU model detects nothing (see README, "Edge TPU status").
 
 ```bash
-# On a machine with GPU:
-yolo export model=best.pt format=tflite int8=True
-# This produces best_int8.tflite — copy to the Pi
-scp best_int8.tflite pi@heron-pi.local:~/heron_deterrent/models/
+# On a machine with a GPU:
+yolo export model=best.pt format=tflite int8=True imgsz=640 data=your_data.yaml
+# produces best_saved_model/best_int8.tflite
+scp best_saved_model/best_int8.tflite \
+    pi@heron-pi.local:~/heron_deterrent/models/heron_cpu_int8.tflite
 ```
 
-```bash
-mkdir -p models
-# File should now be at:  models/best_int8.tflite
-```
+The filename matters: `ai.target: cpu` looks for exactly
+`models/heron_cpu_int8.tflite`. There is no `model_path` key to point elsewhere.
 
 ---
 
@@ -180,20 +180,14 @@ Edit `config.yaml`. The critical Pi-specific settings are:
 
 ```yaml
 ai:
-  confidence_threshold: 0.6
-  model_path: "./models/best_int8.tflite"   # Standard int8, NOT _edgetpu
-  use_edge_tpu: false                        # No built-in TPU on Pi 4
+  target: cpu                                # The only hardware switch
+  confidence_threshold: 0.75                 # Measured: 96% recall
   num_threads: 4                             # Use all 4 cores
   labels:
-    0: "heron"
-    1: "cat"
-    2: "dog"
-    3: "bird"
-    4: "person"
+    0: "heron"                               # Single-class model — exactly one entry
 
 system:
-  running_on_raspberry_pi: true             # Disables Edge TPU automatically
-  frame_rate: 5                             # Keep low — CPU inference is slower
+  frame_rate: 5                              # Keep low — CPU inference is slower
   camera_device_id: 0
   resolution:
     width: 640
@@ -334,9 +328,12 @@ Then update `config.yaml`:
 
 ```yaml
 ai:
-  model_path: "./models/best_int8_edgetpu.tflite"
-  use_edge_tpu: true
+  target: edgetpu
 ```
+
+Place the compiled model at `models/heron_edgetpu.tflite`. Be aware the current
+compiled model is broken — validate detection scores on real images before
+trusting it, not just that the file loads.
 
 ---
 
