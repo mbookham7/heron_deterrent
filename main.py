@@ -7,7 +7,7 @@ import logging.handlers
 import os
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import signal
 import sys
@@ -38,6 +38,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Retention and the media size cap are checked this often. Frequent enough that
+# a burst of triggers cannot fill the card between passes, cheap enough to ignore.
+CLEANUP_INTERVAL_SECONDS = 300
+
+
 class HeronDeterrentSystem:
     def __init__(self, config_path: str = "config.yaml"):
         logger.info("Initializing Heron Deterrent System...")
@@ -57,16 +62,17 @@ class HeronDeterrentSystem:
         db_path = self.config.get('storage.db_path', './data/heron.db')
         self.database = Database(db_path)
 
-        # Media storage
+        # Media storage — clips are written at the capture rate so they play
+        # back at real speed rather than double time.
         media_path = self.config.get('storage.media_path', './media/')
-        self.media_store = MediaStore(media_path)
+        self.media_store = MediaStore(media_path, fps=self.config.get('system.frame_rate', 5))
 
         # Config-driven components first: a bad model path or an empty sounds/
         # should be reported before we start grabbing hardware, so that a camera
         # error cannot mask a configuration error.
 
         # AI model — ai.target selects both the model file and the backend
-        target = self.config.get('ai.target', 'coral')
+        target = self.config.get('ai.target', 'cpu')
         num_threads = self.config.get('ai.num_threads', 4)
         self.model_loader = ModelLoader(target, num_threads)
 
@@ -157,6 +163,7 @@ class HeronDeterrentSystem:
         return [video_clip[i * step] for i in range(num_frames)]
 
     def process_detection_event(self, video_clip: list):
+        """Aggregate over key frames. Used by the dashboard's test-upload path."""
         logger.info("Processing detection event...")
 
         key_frames = self.extract_key_frames(video_clip)
@@ -172,10 +179,36 @@ class HeronDeterrentSystem:
 
         self.handle_detection_result(final_detection, video_path)
 
-    def _process_detection_safe(self, video_clip: list):
-        """Wrapper that acquires the semaphore so at most 2 threads run at once."""
-        with self._detection_semaphore:
+    def _handle_motion_event(self, trigger_frame):
+        """Decide on the frame we already have, then record the clip.
+
+        The old order captured five seconds of video before running any
+        inference, so the deterrent fired ~9.6s after the bird appeared. Judging
+        the trigger frame first cuts that to one inference (~0.9s on this board)
+        and, because a single frame has fewer chances to trip, it also produces
+        fewer false positives than aggregating over five.
+        """
+        try:
+            detection = self.detector.infer(trigger_frame)
+
+            if detection.label == "heron":
+                logger.warning("HERON DETECTED on trigger frame")
+                self.trigger_deterrent()          # first, before anything slow
+                video_clip = self.capture_video_clip(duration_seconds=5)
+                video_path = self.media_store.save_video_clip(video_clip, detection.label)
+                self.alert_manager.create_alert("CRITICAL", detection, video_path)
+                return
+
+            # Inconclusive: fall back to the thorough multi-frame pass so a bird
+            # that was mid-wingbeat or half out of frame is not written off.
+            logger.info("Trigger frame inconclusive — capturing clip for full pass")
+            video_clip = self.capture_video_clip(duration_seconds=5)
             self.process_detection_event(video_clip)
+
+        except Exception as e:
+            logger.error(f"Error handling motion event: {e}", exc_info=True)
+        finally:
+            self._detection_semaphore.release()
 
     def handle_detection_result(self, detection, video_path: str):
         if detection.label == "heron":
@@ -218,21 +251,28 @@ class HeronDeterrentSystem:
 
                 frame = self.camera.read()
                 if frame is None:
-                    logger.warning("Failed to read frame")
+                    # Camera tracks consecutive failures itself and the health
+                    # monitor reconnects; just back off so we do not spin.
                     time.sleep(1)
                     continue
 
                 motion_detected = self.motion_detector.detect(frame)
 
                 if motion_detected and self.cooldown_elapsed():
-                    logger.info("Motion detected - capturing video clip")
+                    # Drop rather than queue. Each queued event would hold ~22 MB
+                    # of frames, and this board has under 700 MB free, so piling
+                    # them up behind a slow alert is how it runs out of memory.
+                    if not self._detection_semaphore.acquire(blocking=False):
+                        logger.warning("Detection slots busy — dropping this motion event")
+                        time.sleep(frame_delay)
+                        continue
+
+                    logger.info("Motion detected - inferring on trigger frame")
                     self.last_trigger_time = time.time()
 
-                    video_clip = self.capture_video_clip(duration_seconds=5)
-
                     threading.Thread(
-                        target=self._process_detection_safe,
-                        args=(video_clip,),
+                        target=self._handle_motion_event,
+                        args=(frame,),
                         daemon=True
                     ).start()
 
@@ -248,7 +288,8 @@ class HeronDeterrentSystem:
         while self.running:
             try:
                 if not self.camera.is_connected():
-                    logger.warning("Camera disconnected, attempting restart...")
+                    # restart() applies its own exponential backoff, so a camera
+                    # that is genuinely gone does not spin the log.
                     self.camera.restart()
 
                 media_path = Path(self.config.get('storage.media_path', './media/'))
@@ -256,7 +297,10 @@ class HeronDeterrentSystem:
                     stat = os.statvfs(media_path)
                     free_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
                     if free_gb < 1.0:
-                        logger.warning(f"Low disk space: {free_gb:.2f} GB remaining")
+                        logger.warning(
+                            f"Low disk space: {free_gb:.2f} GB free, "
+                            f"media using {self.media_store.total_bytes() / 1024 ** 3:.2f} GB"
+                        )
 
                 self.mqtt_client.publish('status', {
                     'status': 'healthy',
@@ -270,18 +314,26 @@ class HeronDeterrentSystem:
                 time.sleep(30)
 
     def cleanup_old_data(self):
+        """Retention plus a hard size cap.
+
+        Runs every few minutes rather than daily. Retention alone cannot protect
+        the card: at 100 events/day a 2 GB partition fills in about four months,
+        long before a 365-day cutoff deletes anything, and a daily job could
+        sleep through the filling.
+        """
         logger.info("Starting cleanup job...")
         retention_days = self.config.get('storage.retention_days', 365)
+        max_media_gb = self.config.get('storage.max_media_gb', 1.0)
 
         while self.running:
             try:
-                logger.info("Running cleanup...")
                 self.database.cleanup_old_records(retention_days)
                 self.media_store.cleanup_old_media(retention_days)
-                time.sleep(86400)  # daily
+                self.media_store.enforce_size_cap(max_media_gb)
+                time.sleep(CLEANUP_INTERVAL_SECONDS)
             except Exception as e:
                 logger.error(f"Error in cleanup: {e}")
-                time.sleep(3600)
+                time.sleep(CLEANUP_INTERVAL_SECONDS)
 
     def start(self):
         logger.info("Starting Heron Deterrent System...")
