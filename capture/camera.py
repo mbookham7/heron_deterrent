@@ -19,7 +19,13 @@ class Camera:
     def _initialize(self):
         self.cap = cv2.VideoCapture(self.device_id)
         if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open camera {self.device_id}")
+            raise RuntimeError(
+                f"Could not open camera device {self.device_id} "
+                f"(config.yaml -> system.camera_device_id).\n"
+                f"  Is it plugged in?     v4l2-ctl --list-devices\n"
+                f"  Wrong device number?  ls /dev/video*\n"
+                f"  In use by something?  sudo fuser -v /dev/video{self.device_id}"
+            )
         
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])

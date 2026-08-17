@@ -11,6 +11,11 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
+
+class NoDeterrentSoundError(RuntimeError):
+    """No WAV files to play. A silent deterrent is not a deterrent."""
+
+
 class AudioPlayer:
     def __init__(self, sound_path: str, volume: int = 80):
         self.sound_path = Path(sound_path)
@@ -19,19 +24,29 @@ class AudioPlayer:
         self._load_sound_files()
 
     def _load_sound_files(self):
+        # Refuse to start silent: the whole point of the device is the noise.
         if not self.sound_path.exists():
-            logger.warning(f"Sound directory not found: {self.sound_path}")
-            self.sound_path.mkdir(parents=True, exist_ok=True)
-            return
+            raise NoDeterrentSoundError(
+                f"Sound directory does not exist: {self.sound_path}\n"
+                f"  Fix: mkdir -p {self.sound_path} and put at least one .wav in it."
+            )
 
-        self.sound_files = list(self.sound_path.glob('*.wav'))
-        logger.info(f"Loaded {len(self.sound_files)} sound files")
+        self.sound_files = sorted(self.sound_path.glob('*.wav'))
+        if not self.sound_files:
+            raise NoDeterrentSoundError(
+                f"No .wav files in {self.sound_path} — the deterrent would fire silently.\n"
+                f"  Fix: copy at least one WAV in, e.g.\n"
+                f"    cp /path/to/heron_distress.wav {self.sound_path}\n"
+                f"  The repo ships sounds/startle_default.wav as a floor; if it is missing, "
+                f"restore it with: git checkout sounds/"
+            )
+
+        logger.info(
+            f"Loaded {len(self.sound_files)} deterrent sound(s): "
+            f"{', '.join(f.name for f in self.sound_files)}"
+        )
 
     def play_random(self):
-        if not self.sound_files:
-            logger.warning("No sound files available")
-            return
-
         sound_file = random.choice(self.sound_files)
         self.play(sound_file)
 
