@@ -30,7 +30,10 @@ ai:
                                # here fails at startup rather than mislabelling.
 
 alert:
-  sms_enabled: true
+  # No Twilio account yet. To enable: create /etc/heron-deterrent.env with the
+  # four TWILIO_* variables (root-owned, mode 600 — see heron-deterrent.service),
+  # then set this to true. No code change needed.
+  sms_enabled: false
   sms_throttle_minutes: 15
 
 audio:
