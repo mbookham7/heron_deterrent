@@ -4,13 +4,12 @@
 
 import os
 import tempfile
+import time
 from flask import Flask, render_template, jsonify, request, send_file, Response
 import cv2
 import json
 import logging
 from pathlib import Path
-import numpy as np
-from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +31,29 @@ def add_security_headers(response):
 def index():
     return render_template('index.html')
 
+# Deliberately below the capture rate: the stream shares one camera (and one
+# lock) with the detection pipeline, and an unthrottled loop pegged a core and
+# starved detection of frames.
+STREAM_FPS = 2
+
+
 @app.route('/api/live-stream')
 def live_stream():
     def generate():
+        delay = 1.0 / STREAM_FPS
         while True:
-            if system and system.camera:
-                frame = system.camera.read()
-                if frame is not None:
-                    ret, buffer = cv2.imencode('.jpg', frame)
-                    if ret:
-                        frame_bytes = buffer.tobytes()
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            else:
+            if not (system and system.camera):
                 break
+            frame = system.camera.read()
+            if frame is not None:
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if ret:
+                    frame_bytes = buffer.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            # Always sleep, including when the read failed, so a disconnected
+            # camera cannot turn this into a busy loop.
+            time.sleep(delay)
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 

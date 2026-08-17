@@ -9,6 +9,7 @@
 # ============================================================
 
 import logging
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -44,6 +45,12 @@ class ObjectDetector:
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
         self.labels = labels or {0: "heron"}
+
+        # A TFLite Interpreter is not thread-safe, and infer() is reachable from
+        # the detection thread and the dashboard's test-upload endpoint at the
+        # same time. Concurrent invoke() is undefined behaviour and can hard-fault
+        # the process under an Edge TPU delegate.
+        self._lock = threading.Lock()
 
         in_detail = self.input_details[0]
         self.input_height = in_detail['shape'][1]
@@ -184,9 +191,10 @@ class ObjectDetector:
     def infer(self, frame: np.ndarray) -> Detection:
         try:
             input_data = self.preprocess_frame(frame)
-            self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
-            self.interpreter.invoke()
-            output = self.interpreter.get_tensor(self.output_details[0]['index'])
+            with self._lock:
+                self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+                self.interpreter.invoke()
+                output = self.interpreter.get_tensor(self.output_details[0]['index'])
 
             detections = self.non_max_suppression(self.parse_output(output))
             if detections:
