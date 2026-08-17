@@ -1,30 +1,41 @@
 # ============================================================
-# FILE: ai/detector_yolov8.py
-# Enhanced YOLO detector specifically for YOLOv8 TFLite models
+# FILE: ai/detector.py
+# YOLOv8 TFLite inference.
+#
+# The models in models/ are single-class (heron) and emit
+# [1, 4 + num_classes, num_anchors] — e.g. [1, 5, 8400] at 640px.
+# The class count is checked against ai.labels at startup so a
+# config/model mismatch cannot silently mislabel detections.
 # ============================================================
+
+import logging
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-import logging
 
 logger = logging.getLogger(__name__)
+
+# Cap boxes entering NMS. Above the threshold there are rarely more than a
+# handful; this only guards against a pathological frame pegging the CPU.
+MAX_BOXES_FOR_NMS = 100
+
+
+class ClassCountMismatch(RuntimeError):
+    """ai.labels does not describe the loaded model's classes."""
+
 
 class Detection:
     def __init__(self, label: str, confidence: float, bbox: Optional[Tuple] = None):
         self.label = label
         self.confidence = confidence
-        self.bbox = bbox  # (x, y, w, h) normalized 0-1
-    
+        self.bbox = bbox  # (x, y, w, h) normalized 0-1, corner origin
+
     def __repr__(self):
         return f"Detection(label={self.label}, confidence={self.confidence:.2f})"
 
+
 class ObjectDetector:
-    """
-    Enhanced YOLO detector for TFLite models with proper output parsing
-    Handles YOLOv5 and YOLOv8 TFLite output formats
-    """
-    
     def __init__(self, model_loader, confidence_threshold: float = 0.6,
                  iou_threshold: float = 0.45, labels: Dict[int, str] = None):
         self.interpreter = model_loader.get_interpreter()
@@ -32,341 +43,170 @@ class ObjectDetector:
         self.output_details = model_loader.get_output_details()
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
+        self.labels = labels or {0: "heron"}
 
-        # Labels loaded from config; fall back to sensible defaults
-        self.labels = labels or {
-            0: "heron",
-            1: "cat",
-            2: "dog",
-            3: "bird",
-            4: "person"
-        }
-        
-        # Determine input size
-        self.input_height = self.input_details[0]['shape'][1]
-        self.input_width = self.input_details[0]['shape'][2]
-        
-        # Check if quantized
-        self.is_quantized = self.input_details[0]['dtype'] in [np.uint8, np.int8]
-        
-        logger.info(f"YOLO Detector initialized:")
-        logger.info(f"  - Input size: {self.input_width}x{self.input_height}")
-        logger.info(f"  - Quantized: {self.is_quantized}")
-        logger.info(f"  - Confidence threshold: {confidence_threshold}")
-        logger.info(f"  - Number of outputs: {len(self.output_details)}")
-    
+        in_detail = self.input_details[0]
+        self.input_height = in_detail['shape'][1]
+        self.input_width = in_detail['shape'][2]
+        self.input_dtype = in_detail['dtype']
+        quant = in_detail.get('quantization', (0.0, 0))
+        self.input_scale, self.input_zero_point = quant[0], quant[1]
+
+        # 4 bbox coords + one score per class
+        self.num_features = 4 + len(self.labels)
+        model_classes = self._model_class_count()
+        if model_classes != len(self.labels):
+            raise ClassCountMismatch(
+                f"ai.labels declares {len(self.labels)} class(es) "
+                f"{sorted(self.labels.values())} but {model_loader.model_path.name} "
+                f"emits {model_classes}.\n"
+                f"  The trained model is single-class (heron). Fix config.yaml -> ai.labels "
+                f"so it lists exactly {model_classes} entry/entries."
+            )
+
+        logger.info(
+            f"Detector ready: input {self.input_width}x{self.input_height} "
+            f"{self.input_dtype.__name__} | classes={len(self.labels)} "
+            f"| confidence>={confidence_threshold} | iou={iou_threshold}"
+        )
+
+    def _model_class_count(self) -> int:
+        """Infer class count from the output tensor: features = 4 bbox + classes."""
+        shape = [d for d in self.output_details[0]['shape'] if d != 1]
+        if len(shape) != 2:
+            raise ClassCountMismatch(
+                f"Unexpected model output shape {list(self.output_details[0]['shape'])}; "
+                f"expected [1, 4+classes, anchors]."
+            )
+        # The feature axis is the short one; anchors number in the thousands.
+        return min(shape) - 4
+
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Preprocess frame for YOLO input"""
-        # Resize
-        processed = cv2.resize(frame, (self.input_width, self.input_height))
-        processed = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
-        
-        # Add batch dimension
-        processed = np.expand_dims(processed, axis=0)
-        
-        # Normalize based on quantization
-        if self.is_quantized:
-            # Keep as uint8
-            processed = processed.astype(np.uint8)
-        else:
-            # Normalize to [0, 1]
-            processed = processed.astype(np.float32) / 255.0
-        
-        return processed
-    
+        img = cv2.resize(frame, (self.input_width, self.input_height))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = np.expand_dims(img, axis=0)
+
+        if self.input_dtype == np.float32:
+            return img.astype(np.float32) / 255.0
+
+        # Quantized input: map normalized pixels through the tensor's own
+        # scale/zero_point. Handles uint8 (Coral) and int8 alike.
+        scale = self.input_scale or (1.0 / 255.0)
+        q = (img.astype(np.float32) / 255.0) / scale + self.input_zero_point
+        limits = np.iinfo(self.input_dtype)
+        return np.clip(np.round(q), limits.min, limits.max).astype(self.input_dtype)
+
     def dequantize(self, data: np.ndarray, output_detail: dict) -> np.ndarray:
-        """Dequantize output data if needed"""
-        if data.dtype in [np.uint8, np.int8]:
-            quant_params = output_detail.get('quantization_parameters', {})
-            scale = quant_params.get('scales', [1.0])[0]
-            zero_point = quant_params.get('zero_points', [0])[0]
-            
-            if scale != 1.0 or zero_point != 0:
-                data = (data.astype(np.float32) - zero_point) * scale
-                logger.debug(f"Dequantized: scale={scale}, zero_point={zero_point}")
-        
-        return data
-    
-    def parse_yolov8_output(self, outputs: List[np.ndarray]) -> List[Detection]:
+        if data.dtype not in (np.uint8, np.int8):
+            return data
+        quant = output_detail.get('quantization', (0.0, 0))
+        scale, zero_point = quant[0], quant[1]
+        if not scale:
+            return data.astype(np.float32)
+        return (data.astype(np.float32) - zero_point) * scale
+
+    def parse_output(self, output: np.ndarray) -> List[Detection]:
+        """Vectorised parse of the full anchor grid.
+
+        Scores every anchor — a heron anywhere in frame is found, not just one
+        in the top-left corner.
         """
-        Parse YOLOv8 TFLite output format
-        
-        YOLOv8 typically outputs shape: [1, 84, 8400] or similar
-        Where:
-        - 84 = 4 (bbox) + 80 (classes for COCO) or 4 + num_classes
-        - 8400 = number of anchor boxes (varies by input size)
-        
-        Format is transposed: [batch, features, num_boxes]
-        Need to transpose to: [num_boxes, features]
-        """
-        detections = []
-        
-        try:
-            # Get the main output (usually the largest one)
-            output = outputs[0]
-            
-            # Dequantize if needed
-            output = self.dequantize(output, self.output_details[0])
-            
-            logger.debug(f"YOLOv8 output shape: {output.shape}, dtype: {output.dtype}, min: {np.min(output)}, max: {np.max(output)}")
-            
-            # Handle 1D output
-            if len(output.shape) == 1:
-                logger.debug(f"1D output detected with shape {output.shape}, cannot parse YOLOv8 format")
-                return detections
-            
-            # Remove batch dimension
-            if output.shape[0] == 1:
-                output = output[0]
-                logger.debug(f"Removed batch dimension: {output.shape}")
-            
-            # YOLOv8 format: [num_features, num_boxes]
-            # We need [num_boxes, num_features]
-            if len(output.shape) == 2 and output.shape[0] < output.shape[1]:
-                output = output.T  # Transpose
-                logger.debug(f"Transposed to: {output.shape}")
-            
-            # Now output should be [num_boxes, num_features]
-            num_boxes = output.shape[0]
-            num_features = output.shape[1]
-            
-            logger.debug(f"Processing {num_boxes} boxes with {num_features} features")
-            
-            # First 4 features are bbox, rest are class scores
-            num_classes = num_features - 4
-            
-            for i in range(min(num_boxes, 10)):  # Log first 10 boxes for debugging
-                # Extract bbox (center_x, center_y, width, height)
-                bbox = output[i, :4]
-                
-                # Extract class scores
-                class_scores = output[i, 4:]
-                
-                # Get best class
-                class_id = np.argmax(class_scores)
-                confidence = float(class_scores[class_id])
-                
-                logger.debug(f"Box {i}: max_score={confidence:.4f}, class_id={class_id}")
-                
-                # Filter by confidence
-                if confidence >= self.confidence_threshold:
-                    # Get label
-                    label = self.labels.get(class_id, "unknown")
-                    logger.debug(f"  -> ACCEPTED: label={label}, confidence={confidence:.4f}")
-                    
-                    # Convert bbox from center format to corner format
-                    # (center_x, center_y, w, h) -> (x, y, w, h)
-                    x_center, y_center, w, h = bbox
-                    x = float(x_center - w / 2)
-                    y = float(y_center - h / 2)
-                    
-                    detection = Detection(
-                        label=label,
-                        confidence=confidence,
-                        bbox=(x, y, float(w), float(h))
-                    )
-                    detections.append(detection)
-                else:
-                    logger.debug(f"  -> REJECTED: confidence {confidence:.4f} < threshold {self.confidence_threshold}")
-            
-            logger.info(f"Found {len(detections)} detections above threshold")
-            
-        except Exception as e:
-            logger.error(f"Error parsing YOLOv8 output: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-        
-        return detections
-    
-    def parse_yolov5_output(self, outputs: List[np.ndarray]) -> List[Detection]:
-        """
-        Parse YOLOv5 TFLite output format
-        
-        YOLOv5 typically outputs: [1, num_boxes, 85]
-        Where 85 = 4 (bbox) + 1 (objectness) + 80 (classes)
-        """
-        detections = []
-        
-        try:
-            output = outputs[0]
-            output = self.dequantize(output, self.output_details[0])
-            
-            logger.debug(f"YOLOv5 output shape before processing: {output.shape}")
-            
-            # Handle shape variations
-            # Skip batch dimension if present and ensure we have 2D output
-            while len(output.shape) > 2:
-                if output.shape[0] == 1:
-                    output = output[0]
-                else:
-                    break
-            
-            # If we somehow still have 1D, reshape it
-            if len(output.shape) == 1:
-                logger.debug(f"1D output detected, cannot parse YOLOv5 format")
-                return detections
-            
-            logger.debug(f"YOLOv5 output shape after processing: {output.shape}")
-            
-            # output is now [num_boxes, 85]
-            for i in range(output.shape[0]):
-                # Format: [x, y, w, h, objectness, class_scores...]
-                bbox = output[i, :4]
-                objectness = output[i, 4]
-                class_scores = output[i, 5:]
-                
-                # Get best class
-                class_id = np.argmax(class_scores)
-                class_confidence = float(class_scores[class_id])
-                
-                # Combined confidence
-                confidence = objectness * class_confidence
-                
-                logger.debug(f"Box {i}: objectness={objectness:.4f}, class_conf={class_confidence:.4f}, combined={confidence:.4f}, class_id={class_id}")
-                
-                if confidence >= self.confidence_threshold:
-                    label = self.labels.get(class_id, "unknown")
-                    logger.debug(f"  -> ACCEPTED: label={label}, confidence={confidence:.4f}")
-                    
-                    detection = Detection(
-                        label=label,
-                        confidence=confidence,
-                        bbox=tuple(bbox.astype(float))
-                    )
-                    detections.append(detection)
-                else:
-                    logger.debug(f"  -> REJECTED: confidence {confidence:.4f} < threshold {self.confidence_threshold}")
-            
-            logger.info(f"Found {len(detections)} detections above threshold")
-            
-        except Exception as e:
-            logger.error(f"Error parsing YOLOv5 output: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-        
-        return detections
-    
-    def non_max_suppression(self, detections: List[Detection]) -> List[Detection]:
-        """Apply Non-Maximum Suppression to remove overlapping boxes"""
-        if len(detections) == 0:
+        arr = self.dequantize(output, self.output_details[0])
+        arr = np.squeeze(arr)
+        if arr.ndim != 2:
+            logger.error(f"Cannot parse model output of shape {arr.shape}")
             return []
-        
-        # Convert to numpy arrays for processing
+
+        # Orient to [num_anchors, num_features] using the known feature count.
+        if arr.shape[0] == self.num_features and arr.shape[1] != self.num_features:
+            arr = arr.T
+        if arr.shape[1] != self.num_features:
+            logger.error(
+                f"Model output {arr.shape} has no axis of length {self.num_features} "
+                f"(4 bbox + {len(self.labels)} class)"
+            )
+            return []
+
+        boxes = arr[:, :4]
+        class_scores = arr[:, 4:]
+        class_ids = class_scores.argmax(axis=1)
+        scores = class_scores[np.arange(class_scores.shape[0]), class_ids]
+
+        keep = np.flatnonzero(scores >= self.confidence_threshold)
+        if keep.size == 0:
+            logger.debug(f"No anchors above {self.confidence_threshold} (max was {scores.max():.3f})")
+            return []
+
+        if keep.size > MAX_BOXES_FOR_NMS:
+            keep = keep[np.argsort(scores[keep])[::-1][:MAX_BOXES_FOR_NMS]]
+
+        detections = []
+        for i in keep:
+            x_center, y_center, w, h = boxes[i]
+            detections.append(Detection(
+                label=self.labels.get(int(class_ids[i]), "unknown"),
+                confidence=float(scores[i]),
+                bbox=(float(x_center - w / 2), float(y_center - h / 2), float(w), float(h)),
+            ))
+
+        logger.info(f"{len(detections)} anchor(s) above threshold (best {scores[keep].max():.3f})")
+        return detections
+
+    def non_max_suppression(self, detections: List[Detection]) -> List[Detection]:
+        if not detections:
+            return []
+
         boxes = np.array([d.bbox for d in detections])
         scores = np.array([d.confidence for d in detections])
-        
-        # Get indices of boxes sorted by score (highest first)
         indices = np.argsort(scores)[::-1]
-        
+
         keep = []
         while len(indices) > 0:
-            # Pick the box with highest score
             current = indices[0]
             keep.append(current)
-            
             if len(indices) == 1:
                 break
-            
-            # Compute IoU with remaining boxes
-            current_box = boxes[current]
-            other_boxes = boxes[indices[1:]]
-            
-            ious = self.compute_iou(current_box, other_boxes)
-            
-            # Keep only boxes with IoU less than threshold
+            ious = self.compute_iou(boxes[current], boxes[indices[1:]])
             indices = indices[1:][ious < self.iou_threshold]
-        
+
         return [detections[i] for i in keep]
-    
+
     def compute_iou(self, box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
-        """Compute Intersection over Union"""
-        # box: [x, y, w, h]
-        # boxes: [n, 4]
-        
         x1 = np.maximum(box[0], boxes[:, 0])
         y1 = np.maximum(box[1], boxes[:, 1])
         x2 = np.minimum(box[0] + box[2], boxes[:, 0] + boxes[:, 2])
         y2 = np.minimum(box[1] + box[3], boxes[:, 1] + boxes[:, 3])
-        
+
         intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
-        
-        area_box = box[2] * box[3]
-        area_boxes = boxes[:, 2] * boxes[:, 3]
-        
-        union = area_box + area_boxes - intersection
-        
+        union = box[2] * box[3] + boxes[:, 2] * boxes[:, 3] - intersection
         return intersection / (union + 1e-6)
-    
+
     def infer(self, frame: np.ndarray) -> Detection:
-        """Run inference and return best detection"""
         try:
-            # Preprocess
             input_data = self.preprocess_frame(frame)
-            
-            # Run inference
             self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
             self.interpreter.invoke()
-            
-            # Get all outputs
-            outputs = []
-            for output_detail in self.output_details:
-                output_data = self.interpreter.get_tensor(output_detail['index'])
-                outputs.append(output_data)
-            
-            # Try to determine output format and parse
-            detections = []
-            
-            # Check output shape to determine format
-            main_output = outputs[0]
-            
-            logger.debug(f"Main output shape: {main_output.shape}, dtype: {main_output.dtype}, min: {np.min(main_output)}, max: {np.max(main_output)}")
-            
-            if len(main_output.shape) == 1:
-                logger.warning("Output is 1D - cannot parse. Check model output format.")
-                return Detection(label="unknown", confidence=0.0)
-            elif len(main_output.shape) >= 2:
-                # YOLOv8 format: [1, num_features, num_boxes] or [num_features, num_boxes]
-                if main_output.shape[-2] < main_output.shape[-1]:
-                    detections = self.parse_yolov8_output(outputs)
-                # YOLOv5 format: [1, num_boxes, num_features] or [num_boxes, num_features]
-                else:
-                    detections = self.parse_yolov5_output(outputs)
-            
-            # Log detections before NMS
-            logger.debug(f"Detections before NMS: {len(detections)}")
-            for det in detections:
-                logger.debug(f"  - {det}")
-            
-            # Apply NMS
-            detections = self.non_max_suppression(detections)
-            
-            logger.debug(f"Detections after NMS: {len(detections)}")
-            
-            # Return best detection
+            output = self.interpreter.get_tensor(self.output_details[0]['index'])
+
+            detections = self.non_max_suppression(self.parse_output(output))
             if detections:
                 best = max(detections, key=lambda d: d.confidence)
                 logger.info(f"Best detection: {best}")
                 return best
-            else:
-                logger.debug("No detections above confidence threshold")
-                return Detection(label="unknown", confidence=0.0)
-            
-        except Exception as e:
-            logger.error(f"Inference error: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+
             return Detection(label="unknown", confidence=0.0)
-    
+
+        except Exception as e:
+            logger.error(f"Inference error: {e}", exc_info=True)
+            return Detection(label="unknown", confidence=0.0)
+
     def aggregate_detections(self, detections: List[Detection]) -> Detection:
-        """Aggregate multiple detections"""
-        # Find heron with highest confidence
-        heron_detections = [d for d in detections if d.label == "heron"]
-        if heron_detections:
-            return max(heron_detections, key=lambda d: d.confidence)
-        
-        # Find most confident non-unknown detection
-        non_unknown = [d for d in detections if d.label != "unknown"]
-        if non_unknown:
-            return max(non_unknown, key=lambda d: d.confidence)
-        
+        heron = [d for d in detections if d.label == "heron"]
+        if heron:
+            return max(heron, key=lambda d: d.confidence)
+
+        known = [d for d in detections if d.label != "unknown"]
+        if known:
+            return max(known, key=lambda d: d.confidence)
+
         return Detection(label="unknown", confidence=0.0)
