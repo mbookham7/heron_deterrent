@@ -2,7 +2,6 @@
 # FILE: deterrent/audio_player.py
 # ============================================================
 
-import os
 import random
 from pathlib import Path
 from typing import List
