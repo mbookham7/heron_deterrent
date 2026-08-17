@@ -83,6 +83,14 @@ echo ""
 echo "Creating directory structure..."
 mkdir -p models sounds media data
 
+# Pick the inference target for the generated config: Pi means CPU, anything
+# else here is assumed to be the Coral Dev Board.
+if [ "$IS_RASPI" = true ]; then
+    TARGET=pi
+else
+    TARGET=coral
+fi
+
 # Create default config if it doesn't exist
 if [ ! -f config.yaml ]; then
     echo ""
@@ -93,18 +101,15 @@ motion:
   cooldown_seconds: 10
 
 ai:
+  target: ${TARGET}
   confidence_threshold: 0.6
-  model_path: "./models/best_int8.tflite"
-  use_edge_tpu: false
   num_threads: 4
+  labels:
+    0: "heron"
 
 alert:
   sms_enabled: false
   sms_throttle_minutes: 15
-  twilio_account_sid: ""
-  twilio_auth_token: ""
-  twilio_from_number: ""
-  twilio_to_number: ""
 
 audio:
   volume: 80
@@ -134,7 +139,6 @@ system:
   resolution:
     width: 640
     height: 480
-  running_on_raspberry_pi: ${IS_RASPI}
 EOF
 fi
 
@@ -142,12 +146,16 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
-echo "1. Copy your best_int8.tflite model to the models/ directory"
-echo "   NOTE: Use the standard int8 model, NOT the _edgetpu variant"
-echo "2. Add WAV sound files to the sounds/ directory"
-echo "3. Edit config.yaml with your Twilio credentials (or use env vars)"
+echo "1. Copy the model for your target into models/ (models are not in git):"
+echo "     target: coral  ->  models/heron_coral_edgetpu.tflite"
+echo "     target: pi     ->  models/heron_pi_int8.tflite"
+echo "   config.yaml was generated with target: ${TARGET}"
+echo "2. Add WAV sound files to sounds/ (startup fails if it is empty)"
+echo "3. Set Twilio credentials as environment variables — never in config.yaml:"
+echo "     TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER TWILIO_TO_NUMBER"
 echo "4. Run: source venv/bin/activate"
-echo "5. Run: python main.py"
+echo "5. Run: ./preflight.py     # checks every dependency before you start"
+echo "6. Run: python main.py"
 echo ""
 echo "To start with web UI: START_WEB_UI=true python main.py"
 echo ""

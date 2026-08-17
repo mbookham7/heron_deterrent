@@ -1,5 +1,14 @@
 # ============================================================
 # FILE: config.yaml
+#
+# ai.target is the ONLY hardware switch. It selects both the
+# model file and the inference backend:
+#
+#   coral -> models/heron_coral_edgetpu.tflite  (Edge TPU delegate)
+#   pi    -> models/heron_pi_int8.tflite        (CPU tflite-runtime)
+#
+# Twilio credentials are never stored here. Set them as
+# environment variables — see heron-deterrent.service.
 # ============================================================
 
 motion:
@@ -7,24 +16,18 @@ motion:
   cooldown_seconds: 10
 
 ai:
-  confidence_threshold: 0.6
-  model_path: "./models/best_int8.tflite"
-  use_edge_tpu: false
-  num_threads: 4
+  target: coral
+  # Measured on the May model: 96% recall over 80 heron images, and clear of the
+  # ~0.70 spikes seen on non-heron frames. Raise if you get false triggers.
+  confidence_threshold: 0.75
+  num_threads: 4               # CPU inference only; ignored when target is coral
   labels:
-    0: "heron"
-    1: "cat"
-    2: "dog"
-    3: "bird"
-    4: "person"
+    0: "heron"                 # The trained model is single-class. Adding entries
+                               # here fails at startup rather than mislabelling.
 
 alert:
   sms_enabled: true
   sms_throttle_minutes: 15
-  twilio_account_sid: ""
-  twilio_auth_token: ""
-  twilio_from_number: ""
-  twilio_to_number: ""
 
 audio:
   volume: 80
@@ -54,4 +57,3 @@ system:
   resolution:
     width: 640
     height: 480
-  running_on_raspberry_pi: true

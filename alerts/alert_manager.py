@@ -22,25 +22,37 @@ class AlertManager:
         self.sms_throttle_minutes = config.get('alert.sms_throttle_minutes', 15)
 
         if self.sms_enabled:
-            # Prefer environment variables; fall back to config file values
-            account_sid = os.getenv('TWILIO_ACCOUNT_SID') or config.get('alert.twilio_account_sid')
-            auth_token  = os.getenv('TWILIO_AUTH_TOKEN')  or config.get('alert.twilio_auth_token')
-            self.from_number = os.getenv('TWILIO_FROM_NUMBER') or config.get('alert.twilio_from_number')
-            self.to_number   = os.getenv('TWILIO_TO_NUMBER')   or config.get('alert.twilio_to_number')
+            # Environment variables are the only credential mechanism. There is
+            # deliberately no config.yaml fallback, so credentials cannot be
+            # committed by accident.
+            env = {name: os.getenv(name) for name in (
+                'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN',
+                'TWILIO_FROM_NUMBER', 'TWILIO_TO_NUMBER',
+            )}
+            missing = [name for name, value in env.items() if not value]
 
-            if account_sid and auth_token:
+            if missing:
+                # Warn rather than exit: losing SMS is bad, losing the deterrent
+                # because SMS is misconfigured is worse. preflight.py fails hard on this.
+                logger.warning(
+                    f"alert.sms_enabled is true but these environment variables are unset: "
+                    f"{', '.join(missing)}. SMS is disabled for this run; "
+                    f"detection and the deterrent are unaffected. "
+                    f"Set them in heron-deterrent.service, then: "
+                    f"sudo systemctl daemon-reload && sudo systemctl restart heron-deterrent"
+                )
+                self.sms_enabled = False
+            else:
+                self.from_number = env['TWILIO_FROM_NUMBER']
+                self.to_number = env['TWILIO_TO_NUMBER']
                 try:
-                    self.twilio_client = TwilioClient(account_sid, auth_token)
-                    logger.info("Twilio SMS client initialized")
+                    self.twilio_client = TwilioClient(
+                        env['TWILIO_ACCOUNT_SID'], env['TWILIO_AUTH_TOKEN']
+                    )
+                    logger.info(f"Twilio SMS client initialized (to {self.to_number})")
                 except Exception as e:
                     logger.error(f"Failed to initialize Twilio: {e}")
                     self.sms_enabled = False
-            else:
-                logger.warning(
-                    "Twilio credentials not configured. "
-                    "Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN environment variables."
-                )
-                self.sms_enabled = False
 
     def create_alert(self, alert_type: str, detection, video_path: str = ""):
         message = f"{alert_type}: {detection.label} detected (confidence: {detection.confidence:.2f})"

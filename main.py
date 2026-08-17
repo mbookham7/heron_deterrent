@@ -61,6 +61,27 @@ class HeronDeterrentSystem:
         media_path = self.config.get('storage.media_path', './media/')
         self.media_store = MediaStore(media_path)
 
+        # Config-driven components first: a bad model path or an empty sounds/
+        # should be reported before we start grabbing hardware, so that a camera
+        # error cannot mask a configuration error.
+
+        # AI model — ai.target selects both the model file and the backend
+        target = self.config.get('ai.target', 'coral')
+        num_threads = self.config.get('ai.num_threads', 4)
+        self.model_loader = ModelLoader(target, num_threads)
+
+        # Load YOLO class labels from config so they match the trained model
+        labels_config = self.config.get('ai.labels', {})
+        labels = {int(k): v for k, v in labels_config.items()} if labels_config else None
+
+        confidence_threshold = self.config.get('ai.confidence_threshold', 0.6)
+        self.detector = ObjectDetector(self.model_loader, confidence_threshold, labels=labels)
+
+        # Audio player — raises if sounds/ is empty
+        sound_path = self.config.get('audio.sound_path', './sounds/')
+        volume = self.config.get('audio.volume', 80)
+        self.audio_player = AudioPlayer(sound_path, volume)
+
         # Camera
         device_id = self.config.get('system.camera_device_id', 0)
         resolution = (
@@ -72,30 +93,6 @@ class HeronDeterrentSystem:
         # Motion detector
         sensitivity = self.config.get('motion.sensitivity', 5000)
         self.motion_detector = MotionDetector(sensitivity)
-
-        # AI model
-        model_path = self.config.get('ai.model_path')
-        use_edge_tpu = self.config.get('ai.use_edge_tpu', False)
-        num_threads = self.config.get('ai.num_threads', 1)
-
-        # Raspberry Pi 4 has no built-in Edge TPU
-        if self.config.get('system.running_on_raspberry_pi', False):
-            logger.info("Running on Raspberry Pi - using CPU inference")
-            use_edge_tpu = False
-
-        self.model_loader = ModelLoader(model_path, use_edge_tpu, num_threads)
-
-        # Load YOLO class labels from config so they match the trained model
-        labels_config = self.config.get('ai.labels', {})
-        labels = {int(k): v for k, v in labels_config.items()} if labels_config else None
-
-        confidence_threshold = self.config.get('ai.confidence_threshold', 0.6)
-        self.detector = ObjectDetector(self.model_loader, confidence_threshold, labels=labels)
-
-        # Audio player
-        sound_path = self.config.get('audio.sound_path', './sounds/')
-        volume = self.config.get('audio.volume', 80)
-        self.audio_player = AudioPlayer(sound_path, volume)
 
         # MQTT
         mqtt_enabled = self.config.get('mqtt.enabled', False)
@@ -317,7 +314,14 @@ class HeronDeterrentSystem:
         logger.info("System stopped")
 
 def main():
-    system = HeronDeterrentSystem()
+    try:
+        system = HeronDeterrentSystem()
+    except RuntimeError as e:
+        # Missing model, missing sounds, label/model mismatch, no camera. These are
+        # operator-fixable, so print the instruction rather than a traceback.
+        print(f"\nSTARTUP FAILED\n\n{e}\n", file=sys.stderr)
+        print("Run ./preflight.py to check every dependency at once.\n", file=sys.stderr)
+        sys.exit(2)
 
     if os.getenv('START_WEB_UI', 'false').lower() == 'true':
         from ui.app import start_web_ui
