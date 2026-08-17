@@ -21,8 +21,18 @@ motion:
 
 ai:
   target: cpu
-  # Measured on the May model: 96% recall over 80 heron images, and clear of the
-  # ~0.70 spikes seen on non-heron frames. Raise if you get false triggers.
+  # 0.75 is NOT a safe operating point, and the previous claim here ("clear of
+  # the ~0.70 spikes seen on non-heron frames") was wrong. Re-measured against
+  # correct letterbox preprocessing:
+  #
+  #   heron images (44, stock domain):  recall 0.82, precision 1.00
+  #   real camera frames with no heron: 18% score above 0.75, worst case 0.89
+  #
+  # There is no threshold that separates them: the model was trained on ~180
+  # heron close-ups with no negative examples, so a dark shape of roughly the
+  # right size scores like a heron. Raising this to 0.85 cuts the false frames
+  # to ~2% but drops recall to 0.60. Fixing it needs negatives in the training
+  # set, not a different number here.
   confidence_threshold: 0.75
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:

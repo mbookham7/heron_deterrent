@@ -233,8 +233,9 @@ Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
 
 The most valuable thing you can collect is **negative examples** from your own
 pond — the model was trained on ~180 close-up herons with no negatives, which is
-why non-heron frames occasionally score ~0.70. Label them in the dashboard's
-Unclassified panel.
+why non-heron frames score as high as **0.89**: measured on real camera footage,
+18% of frames containing no heron at all still clear the 0.75 threshold. Label
+them in the dashboard's Unclassified panel.
 
 ---
 

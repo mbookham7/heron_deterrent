@@ -42,10 +42,37 @@ inference, 640×640 model:
 |---|---|
 | Inference | 920 ms/frame |
 | Motion → deterrent sound | **1.02 s** |
-| Recall @ `confidence_threshold: 0.75` | 96% over 80 dataset images |
-| Non-heron frames | mostly 0.15–0.33, occasional spikes to ~0.70 |
 | Saved clip size | 117 KB (5 s, 640×480) |
 | Resident memory | ~110 MB |
+
+### Accuracy — read the caveat, the old numbers here were wrong
+
+This table previously claimed "96% recall over 80 dataset images" and non-heron
+frames "clear of ~0.70 spikes". Neither figure was reproducible: no script in
+this repo produced them, and the second is contradicted by the footage in
+`media/`. Re-measured against the corrected letterbox preprocessing (see
+`ai/letterbox.py`), using the CPU int8 model:
+
+| | before (stretch) | after (letterbox) |
+|---|---|---|
+| Recall @ 0.75, IoU 0.5 | 0.73 | **0.82** |
+| Precision @ 0.75 | 0.97 | **1.00** |
+| mAP50 | 0.925 | **0.953** |
+| Real camera frames with no heron scoring ≥ 0.75 | 11% | 18% |
+| Worst false score on those frames | 0.886 | 0.894 |
+
+Positives are the 44 validation images from `heron-data`, cropped and scaled to
+the camera's 640×480. **They are the same stock-photo domain as the training
+set, so they flatter the model and say nothing about performance at a pond.**
+Negatives are 275 frames of real camera footage from `media/` — which is an
+indoor bench test, not the deployment scene.
+
+The important number is the last row: **fixing the preprocessing made the
+positives better on every measure and the false positives worse.** That is not
+a contradiction. The model has never seen a negative example, so it scores any
+dark object of roughly the right size like a heron; feeding it undistorted input
+raises its confidence on those objects too. No threshold separates the two
+distributions. The fix is negative training data, not a different threshold.
 
 ---
 
@@ -118,6 +145,39 @@ tag an "unknown" clip as cat, dog, bird or person to triage footage. Those are
 human triage labels, not model classes. Only heron-tagged images get a YOLO
 annotation; anything else is written as a background example (empty label file).
 
+### Frames are letterboxed, not stretched
+
+The other half of the contract with the training repo, and the half that used to
+be broken. Three things have to agree between the two repos: the model file, the
+class count, and the **preprocessing convention**.
+
+The camera gives 640×480 (4:3). The model input is 640×640 (square). Ultralytics
+trained the model by *letterboxing* — scale by one ratio so the aspect ratio is
+preserved, then pad the remainder to square with grey `114`. This app used to
+`cv2.resize()` straight to 640×640 instead, stretching every frame vertically by
+1.33× and showing the model a distortion it never saw in training. On a tall thin
+bird that is the worst axis to get wrong.
+
+`ai/letterbox.py` is now the single definition of that convention, and the boxes
+the model returns are mapped back out of the padded square before they leave
+`infer()` — so a `Detection.bbox` always describes the frame that was passed in,
+not the square the model saw. This matters beyond drawing: the dashboard's
+labelling path writes YOLO annotation files, and a box left in square
+coordinates would be wrong by the height of the padding in every one of them.
+
+The class count is enforced at startup by `ClassCountMismatch`. The
+preprocessing convention is enforced by `tests/test_letterbox.py`, which pins it
+against Ultralytics' own `LetterBox` and `scale_boxes`:
+
+```bash
+python tests/test_letterbox.py         # no pytest needed; runs on the board
+```
+
+The two Ultralytics cross-checks skip if `ultralytics` is not installed, which it
+is not on a board. **Run them on a dev machine** (`pip install ultralytics`)
+before trusting a change to preprocessing — without them the file only asserts
+that the code agrees with itself.
+
 ### Full configuration reference
 
 | Key | Default | Description |
@@ -125,7 +185,7 @@ annotation; anything else is written as a background example (empty label file).
 | `motion.sensitivity` | `5000` | Minimum contour area to trigger. Lower = more sensitive |
 | `motion.cooldown_seconds` | `10` | Minimum gap between detection events |
 | `ai.target` | `cpu` | `cpu` or `edgetpu` — the only hardware switch |
-| `ai.confidence_threshold` | `0.75` | Measured: 96% recall, clear of non-heron spikes |
+| `ai.confidence_threshold` | `0.75` | Recall 0.82 / precision 1.00 on positives; 18% of real no-heron frames also clear it. See "Accuracy" |
 | `ai.num_threads` | `4` | CPU threads; ignored on `edgetpu` |
 | `ai.labels` | `{0: heron}` | Must match the model's class count exactly |
 | `alert.sms_enabled` | `false` | Needs `/etc/heron-deterrent.env` (see below) |
@@ -350,7 +410,11 @@ heron_deterrent/
 │
 ├── ai/
 │   ├── detector.py               # YOLOv8 TFLite inference + NMS
+│   ├── letterbox.py              # The preprocessing convention. Do not bypass
 │   └── model_loader.py           # Target → model file → backend
+│
+├── tests/
+│   └── test_letterbox.py         # Pins preprocessing against Ultralytics
 │
 ├── capture/
 │   ├── camera.py                 # Locked, self-healing camera wrapper
@@ -444,8 +508,10 @@ Run `./preflight.py` first — it diagnoses most of this and prints the fix.
 
 ### False triggers
 
-Raise `ai.confidence_threshold` toward `0.85`. Recall falls to about 72% at that
-point, so prefer collecting negative training images instead.
+Raising `ai.confidence_threshold` to `0.85` cuts the no-heron frames that clear
+it from 18% to about 2%, but **recall drops from 0.82 to 0.60** — one heron in
+five walks past unchallenged. There is no setting that gives you both; the score
+distributions overlap. Collect negative training images instead.
 
 ### Model will not load
 
