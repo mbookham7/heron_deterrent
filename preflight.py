@@ -96,8 +96,8 @@ def check_model(config):
 
 def check_edge_tpu(config, model_loaded):
     """Only meaningful when the Coral target is selected."""
-    if config.get('ai.target') != 'coral':
-        print(f"{DIM}[skip] edgetpu      ai.target is not 'coral'{OFF}")
+    if config.get('ai.target') != 'edgetpu':
+        print(f"{DIM}[skip] edgetpu      ai.target is not 'edgetpu'{OFF}")
         return True
 
     try:
@@ -280,11 +280,12 @@ def check_twilio(config):
         return check('sms', False,
                      f"sms_enabled is true but {len(missing)} variable(s) unset: "
                      f"{', '.join(missing)}",
-                     "Set them in the service unit, not config.yaml:",
-                     "  sudo systemctl edit heron-deterrent",
-                     "Then:  sudo systemctl daemon-reload && "
-                     "sudo systemctl restart heron-deterrent",
-                     "Running by hand? export them in this shell first.")
+                     "Credentials belong in a root-owned file outside git:",
+                     "  sudo install -m 600 -o root -g root /dev/null /etc/heron-deterrent.env",
+                     "  sudo nano /etc/heron-deterrent.env     # TWILIO_ACCOUNT_SID=... etc",
+                     "  sudo systemctl restart heron-deterrent",
+                     "Running by hand? export them in this shell first.",
+                     "Not using SMS? set alert.sms_enabled: false in config.yaml.")
 
     to = os.getenv('TWILIO_TO_NUMBER')
     masked = to[:3] + '*' * max(0, len(to) - 5) + to[-2:] if to and len(to) > 5 else '(set)'

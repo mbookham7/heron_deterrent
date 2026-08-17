@@ -1,6 +1,10 @@
 # ============================================================
 # Systemd service unit for the Heron Deterrent System
 #
+# Paths below are for the Coral Dev Board (Mendel Linux, user
+# "mendel"). On a Raspberry Pi, change User/Group to "pi" and
+# both paths from /home/mendel to /home/pi.
+#
 # Install:
 #   sudo cp heron-deterrent.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -14,23 +18,43 @@
 
 [Unit]
 Description=Heron Deterrent System
-After=network.target sound.target
-Wants=network.target
+# network-online, not network: the board is on Wi-Fi and "network.target"
+# is reached long before an address is actually assigned.
+After=network-online.target sound.target
+Wants=network-online.target
+
+# If it fails 5 times in 2 minutes, stop retrying and stay failed. A restart
+# loop on a config error buries the real message in the journal; a stopped
+# unit is visible in `systemctl status`.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/heron_deterrent
-ExecStart=/home/pi/heron_deterrent/venv/bin/python main.py
+User=mendel
+Group=mendel
+WorkingDirectory=/home/mendel/heron_deterrent
+ExecStart=/home/mendel/heron_deterrent/venv/bin/python main.py
 
 # Start the web UI automatically
 Environment="START_WEB_UI=true"
 
-# Twilio credentials — set these instead of storing them in config.yaml
-# Environment="TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# Environment="TWILIO_AUTH_TOKEN=your_auth_token"
-# Environment="TWILIO_FROM_NUMBER=+1xxxxxxxxxx"
-# Environment="TWILIO_TO_NUMBER=+1xxxxxxxxxx"
+# Twilio credentials live in a root-owned file that is NOT in git.
+# The leading "-" means the service still starts if the file is absent
+# (SMS simply stays disabled and logs a warning).
+#
+#   sudo install -m 600 -o root -g root /dev/null /etc/heron-deterrent.env
+#   sudo tee /etc/heron-deterrent.env >/dev/null <<'EOF'
+#   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#   TWILIO_AUTH_TOKEN=your_auth_token
+#   TWILIO_FROM_NUMBER=+441234567890
+#   TWILIO_TO_NUMBER=+441234567890
+#   EOF
+#   sudo systemctl restart heron-deterrent
+#
+# Never put credentials in Environment= lines here: this file is tracked in
+# git, so filling them in would commit them.
+EnvironmentFile=-/etc/heron-deterrent.env
 
 # Restart automatically if the process crashes
 Restart=on-failure

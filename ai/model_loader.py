@@ -13,10 +13,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# target -> (model filename in models/, needs Edge TPU delegate, source artefact name)
+# ai.target names the INFERENCE BACKEND, not the board. A Coral Dev Board runs
+# 'cpu' perfectly well, and currently has to: the compiled Edge TPU model's
+# classification head was destroyed by full-integer quantisation, so it scores
+# ~1e-5 on every anchor and detects nothing. Until a working compiled model
+# exists, 'cpu' is the only usable target on either board.
+#
+# target -> (model filename in models/, needs Edge TPU delegate, source artefact)
 TARGETS = {
-    'coral': ('heron_coral_edgetpu.tflite', True,  'best_full_int8_edgetpu.tflite'),
-    'pi':    ('heron_pi_int8.tflite',       False, 'best_int8_edgetpu.tflite'),
+    'cpu':     ('heron_cpu_int8.tflite', False, 'best_int8_edgetpu.tflite'),
+    'edgetpu': ('heron_edgetpu.tflite',  True,  'best_full_int8_edgetpu.tflite'),
 }
 
 EDGETPU_LIB = 'libedgetpu.so.1'
@@ -69,20 +75,20 @@ class ModelLoader:
             from tflite_runtime.interpreter import Interpreter, load_delegate
         except ImportError as e:
             raise ModelLoadError(
-                "ai.target is 'coral' but tflite_runtime is not installed.\n"
+                "ai.target is 'edgetpu' but tflite_runtime is not installed.\n"
                 "  On Mendel Linux:  sudo apt-get install -y python3-pycoral libedgetpu1-std\n"
-                "  Not on a Coral?   set ai.target: pi in config.yaml"
+                "  No Edge TPU?      set ai.target: cpu in config.yaml"
             ) from e
 
         try:
             delegate = load_delegate(EDGETPU_LIB)
         except Exception as e:
             raise ModelLoadError(
-                f"ai.target is 'coral' but the Edge TPU delegate ({EDGETPU_LIB}) would not load.\n"
+                f"ai.target is 'edgetpu' but the delegate ({EDGETPU_LIB}) would not load.\n"
                 f"  Is the TPU visible?   lspci -nn | grep 089a\n"
                 f"  Is the driver up?     dmesg | grep apex\n"
                 f"  Reinstall runtime:    sudo apt-get install --reinstall libedgetpu1-std\n"
-                f"  Not on a Coral?       set ai.target: pi in config.yaml\n"
+                f"  No Edge TPU?          set ai.target: cpu in config.yaml\n"
                 f"  Underlying error: {e}"
             ) from e
 
@@ -102,8 +108,10 @@ class ModelLoader:
                 Interpreter = tf.lite.Interpreter
             except ImportError as e:
                 raise ModelLoadError(
-                    "ai.target is 'pi' but no TFLite runtime is installed.\n"
+                    "ai.target is 'cpu' but no TFLite runtime is installed.\n"
                     "  On a Raspberry Pi:  pip install tflite-runtime\n"
+                    "  On Mendel/Coral:    sudo apt-get install -y python3-tflite-runtime\n"
+                    "                      (and create the venv with --system-site-packages)\n"
                     "  On a dev machine:   pip install tensorflow"
                 ) from e
 

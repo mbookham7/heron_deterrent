@@ -50,9 +50,20 @@ if [ "$IS_RASPI" = true ]; then
 fi
 
 # Create virtual environment
+#
+# On Mendel (Coral) the venv MUST see system site-packages: the TFLite runtime
+# and pycoral come from apt and are version-matched to libedgetpu. Installing
+# tflite-runtime from pip there produces a segfault when the Edge TPU delegate
+# builds an Interpreter, because the pip build targets a newer TFLite than
+# libedgetpu was compiled against.
 echo ""
-echo "Creating Python virtual environment..."
-python3 -m venv venv
+if [ "$IS_RASPI" = true ]; then
+    echo "Creating Python virtual environment..."
+    python3 -m venv venv
+else
+    echo "Creating Python virtual environment (--system-site-packages for Mendel)..."
+    python3 -m venv --system-site-packages venv
+fi
 source venv/bin/activate
 
 # Install Python packages
@@ -83,13 +94,10 @@ echo ""
 echo "Creating directory structure..."
 mkdir -p models sounds media data
 
-# Pick the inference target for the generated config: Pi means CPU, anything
-# else here is assumed to be the Coral Dev Board.
-if [ "$IS_RASPI" = true ]; then
-    TARGET=pi
-else
-    TARGET=coral
-fi
+# Both boards use CPU inference today. "edgetpu" exists as a target but its
+# compiled model detects nothing (quantisation destroyed the class head), so
+# nothing selects it automatically.
+TARGET=cpu
 
 # Create default config if it doesn't exist
 if [ ! -f config.yaml ]; then
@@ -102,7 +110,7 @@ motion:
 
 ai:
   target: ${TARGET}
-  confidence_threshold: 0.6
+  confidence_threshold: 0.75
   num_threads: 4
   labels:
     0: "heron"
@@ -117,6 +125,7 @@ audio:
 
 storage:
   retention_days: 365
+  max_media_gb: 1.0
   media_path: "./media/"
   db_path: "./data/heron.db"
 
@@ -147,12 +156,14 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
 echo "1. Copy the model for your target into models/ (models are not in git):"
-echo "     target: coral  ->  models/heron_coral_edgetpu.tflite"
-echo "     target: pi     ->  models/heron_pi_int8.tflite"
+echo "     target: cpu      ->  models/heron_cpu_int8.tflite   (either board)"
+echo "     target: edgetpu  ->  models/heron_edgetpu.tflite    (Coral, currently broken)"
 echo "   config.yaml was generated with target: ${TARGET}"
 echo "2. Add WAV sound files to sounds/ (startup fails if it is empty)"
-echo "3. Set Twilio credentials as environment variables — never in config.yaml:"
+echo "3. For SMS, put credentials in /etc/heron-deterrent.env (root, mode 600) —"
+echo "   never in config.yaml, which is tracked in git:"
 echo "     TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER TWILIO_TO_NUMBER"
+echo "   Then set alert.sms_enabled: true in config.yaml"
 echo "4. Run: source venv/bin/activate"
 echo "5. Run: ./preflight.py     # checks every dependency before you start"
 echo "6. Run: python main.py"
