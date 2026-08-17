@@ -4,8 +4,6 @@
 
 import json
 import logging
-import threading
-import time
 from typing import Dict, Any
 
 try:
@@ -23,7 +21,6 @@ class MQTTClient:
         self.topics = topics
         self.enabled = enabled and MQTT_AVAILABLE
         self.client = None
-        self._reconnect_delay = 5  # seconds; doubles on each failed attempt, capped at 60
 
         if self.enabled:
             self._initialize()
@@ -38,37 +35,36 @@ class MQTTClient:
             self.client = mqtt.Client()
             self.client.on_connect = self._on_connect
             self.client.on_disconnect = self._on_disconnect
-            self.client.connect(self.broker, self.port, 60)
+
+            # paho's own backoff, retrying indefinitely. The previous code gave
+            # up permanently after 10 attempts, so a broker that outlasted a few
+            # minutes of downtime meant no MQTT until the next restart.
+            self.client.reconnect_delay_set(min_delay=1, max_delay=60)
+
+            # connect_async never blocks: at the pond the broker may be
+            # unreachable at boot, and startup must not stall waiting for it.
+            self.client.connect_async(self.broker, self.port, keepalive=60)
             self.client.loop_start()
-            logger.info(f"MQTT client initialized: {self.broker}:{self.port}")
+            logger.info(
+                f"MQTT connecting in background to {self.broker}:{self.port} "
+                f"(retries indefinitely, 1-60s backoff)"
+            )
         except Exception as e:
             logger.error(f"Failed to initialize MQTT: {e}")
             self.enabled = False
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
-            self._reconnect_delay = 5  # reset backoff on successful connect
             logger.info("Connected to MQTT broker")
         else:
-            logger.error(f"MQTT connection failed with code {rc}")
+            logger.error(f"MQTT connection refused with code {rc}")
 
     def _on_disconnect(self, client, userdata, rc):
-        logger.warning("Disconnected from MQTT broker")
-        if rc != 0 and self.enabled:
-            threading.Thread(target=self._reconnect_loop, daemon=True).start()
-
-    def _reconnect_loop(self):
-        for attempt in range(1, 11):
-            logger.info(f"MQTT reconnect attempt {attempt}, waiting {self._reconnect_delay}s...")
-            time.sleep(self._reconnect_delay)
-            try:
-                self.client.reconnect()
-                logger.info("MQTT reconnected successfully")
-                return
-            except Exception as e:
-                logger.warning(f"MQTT reconnect attempt {attempt} failed: {e}")
-                self._reconnect_delay = min(self._reconnect_delay * 2, 60)
-        logger.error("MQTT reconnection failed after 10 attempts — giving up")
+        # paho's network loop reconnects on its own; nothing to do but note it.
+        if rc != 0:
+            logger.warning("Lost MQTT connection — paho will keep retrying")
+        else:
+            logger.info("Disconnected from MQTT broker")
 
     def publish(self, topic_key: str, payload: Dict[str, Any]):
         if not self.enabled or not self.client:

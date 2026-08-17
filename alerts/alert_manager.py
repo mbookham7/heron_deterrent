@@ -5,11 +5,16 @@
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Optional
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+from twilio.http.http_client import TwilioHttpClient
 
 logger = logging.getLogger(__name__)
+
+# Twilio's helper uses requests with no default timeout, so a flaky network can
+# block the caller indefinitely. The deterrent already fired by the time we get
+# here, but an unbounded wait would still tie up a detection slot.
+SMS_TIMEOUT_SECONDS = 10
 
 class AlertManager:
     def __init__(self, config, database, mqtt_client):
@@ -38,8 +43,8 @@ class AlertManager:
                     f"alert.sms_enabled is true but these environment variables are unset: "
                     f"{', '.join(missing)}. SMS is disabled for this run; "
                     f"detection and the deterrent are unaffected. "
-                    f"Set them in heron-deterrent.service, then: "
-                    f"sudo systemctl daemon-reload && sudo systemctl restart heron-deterrent"
+                    f"Put them in /etc/heron-deterrent.env (mode 600, root-owned), then: "
+                    f"sudo systemctl restart heron-deterrent"
                 )
                 self.sms_enabled = False
             else:
@@ -47,9 +52,13 @@ class AlertManager:
                 self.to_number = env['TWILIO_TO_NUMBER']
                 try:
                     self.twilio_client = TwilioClient(
-                        env['TWILIO_ACCOUNT_SID'], env['TWILIO_AUTH_TOKEN']
+                        env['TWILIO_ACCOUNT_SID'], env['TWILIO_AUTH_TOKEN'],
+                        http_client=TwilioHttpClient(timeout=SMS_TIMEOUT_SECONDS),
                     )
-                    logger.info(f"Twilio SMS client initialized (to {self.to_number})")
+                    logger.info(
+                        f"Twilio SMS client initialized (to {self.to_number}, "
+                        f"{SMS_TIMEOUT_SECONDS}s timeout)"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to initialize Twilio: {e}")
                     self.sms_enabled = False
