@@ -93,3 +93,22 @@ system:
   resolution:
     width: 640
     height: 480
+
+# ------------------------------------------------------------------
+# COLLECT MODE — data collection at the pond.
+#
+# The point of this flag: put the device out with the model as-is and
+# have it manufacture training data instead of relying on it. Collect
+# mode records any motion event whose best key-frame score clears
+# record_threshold (much lower than alert_threshold), so the dashboard
+# fills with borderline cases you can then label. deterrent_enabled
+# is separate: you may want to collect data with the sound OFF, so
+# behaviour is not confounded by the deterrent going off constantly.
+#
+# Off in production. Alerts and the deter path work exactly as before
+# when this is off.
+# ------------------------------------------------------------------
+collect_mode:
+  enabled: false
+  record_threshold: 0.30   # everything above this gets a clip on disk
+  deterrent_enabled: true  # independently switchable — false = silent run

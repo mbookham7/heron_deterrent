@@ -81,20 +81,39 @@ class HeronDeterrentSystem:
         labels = {int(k): v for k, v in labels_config.items()} if labels_config else None
 
         # Two thresholds now. The detector's internal anchor filter uses the
-        # LOWER of them so both decision paths see the boxes they need. Config
-        # falls back to the old single `confidence_threshold` if the split keys
-        # are absent, so an older config file still boots.
+        # LOWEST relevant threshold so every decision path sees the boxes it
+        # needs. Config falls back to the old single `confidence_threshold` if
+        # the split keys are absent, so an older config file still boots.
         fallback = self.config.get('ai.confidence_threshold', 0.90)
         self.deter_threshold = self.config.get('ai.deter_threshold', fallback)
         self.alert_threshold = self.config.get('ai.alert_threshold', fallback)
         self.alert_vote_k = self.config.get('ai.alert_vote_k', 3)
         self.alert_vote_m = self.config.get('ai.alert_vote_m', 5)
+
+        # Collect mode: record any motion event above record_threshold, and
+        # optionally silence the deterrent. Off in production.
+        self.collect_mode_enabled = self.config.get('collect_mode.enabled', False)
+        self.record_threshold = self.config.get('collect_mode.record_threshold', 0.30)
+        self.deterrent_enabled = self.config.get('collect_mode.deterrent_enabled', True)
+
+        # Anchor floor: pull the detector's filter down to whichever number
+        # actually needs boxes. Collect mode needs boxes at record_threshold or
+        # nothing gets recorded; alert path needs alert_threshold; deter path
+        # needs deter_threshold. Pick the minimum.
         anchor_floor = min(self.deter_threshold, self.alert_threshold)
+        if self.collect_mode_enabled:
+            anchor_floor = min(anchor_floor, self.record_threshold)
         self.detector = ObjectDetector(self.model_loader, anchor_floor, labels=labels)
         logger.info(
             f"Thresholds: deter={self.deter_threshold}  alert={self.alert_threshold}  "
-            f"vote={self.alert_vote_k}/{self.alert_vote_m}"
+            f"vote={self.alert_vote_k}/{self.alert_vote_m}  "
+            f"anchor_floor={anchor_floor}"
         )
+        if self.collect_mode_enabled:
+            logger.warning(
+                f"COLLECT MODE ON: recording everything above {self.record_threshold}, "
+                f"deterrent {'enabled' if self.deterrent_enabled else 'DISABLED'}"
+            )
 
         # Audio player — raises if sounds/ is empty
         sound_path = self.config.get('audio.sound_path', './sounds/')
@@ -267,6 +286,21 @@ class HeronDeterrentSystem:
             )
 
     def trigger_deterrent(self):
+        """Fire the deterrent sound, unless collect mode has silenced it.
+
+        Silenced runs still log and publish the "would have fired" event so a
+        dashboard operator can see the counterfactual — did you disable the
+        deterrent and now nothing is being scared off, or is the model just
+        not firing?
+        """
+        if self.collect_mode_enabled and not self.deterrent_enabled:
+            logger.info("Deterrent SILENCED (collect_mode.deterrent_enabled=false)")
+            self.mqtt_client.publish('detection', {
+                'event': 'deterrent_silenced',
+                'timestamp': datetime.now().isoformat(),
+            })
+            return
+
         logger.info("Triggering deterrent sound...")
         self.audio_player.play_random()
 
