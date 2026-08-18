@@ -21,19 +21,28 @@ motion:
 
 ai:
   target: cpu
-  # 0.75 is NOT a safe operating point, and the previous claim here ("clear of
-  # the ~0.70 spikes seen on non-heron frames") was wrong. Re-measured against
-  # correct letterbox preprocessing:
+  # Two thresholds, because one number cannot do both jobs. A false BANG is
+  # nearly free; being 9.6 s late to it is not — so the deter path is fast and
+  # optimistic. A false ALERT costs the user's attention and their trust in
+  # the dashboard — so the alert path is strict and confirmed across frames.
   #
-  #   heron images (44, stock domain):  recall 0.82, precision 1.00
-  #   real camera frames with no heron: 18% score above 0.75, worst case 0.89
+  #   deter_threshold  — fires the sound. Single trigger frame, max-pool.
+  #   alert_threshold  — governs recording + SMS + dashboard stats.
+  #                       Requires alert_vote_k of the last alert_vote_m
+  #                       key frames to clear it (not the previous max-pool,
+  #                       which handed a spurious spike five chances to win).
   #
-  # There is no threshold that separates them: the model was trained on ~180
-  # heron close-ups with no negative examples, so a dark shape of roughly the
-  # right size scores like a heron. Raising this to 0.85 cuts the false frames
-  # to ~2% but drops recall to 0.60. Fixing it needs negatives in the training
-  # set, not a different number here.
-  confidence_threshold: 0.75
+  # These defaults are measured, not vibes: run tools/measure_thresholds.py
+  # to re-derive them from the current media/ snapshot. Do that when you have
+  # more field data — the current sample is thin.
+  deter_threshold: 0.90
+  alert_threshold: 0.95
+  alert_vote_k: 3              # need k of the last m key frames above alert_threshold
+  alert_vote_m: 5              # matches extract_key_frames default in main.py
+  # Deprecated: kept as a fallback so an older config still boots. If both new
+  # keys are missing, both paths use this. Remove once every deployment has
+  # migrated.
+  confidence_threshold: 0.90
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:
     0: "heron"                 # The trained model is single-class. Adding entries

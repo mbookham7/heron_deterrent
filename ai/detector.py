@@ -275,7 +275,42 @@ class ObjectDetector:
             logger.error(f"Inference error: {e}", exc_info=True)
             return Detection(label="unknown", confidence=0.0)
 
-    def aggregate_detections(self, detections: List[Detection]) -> Detection:
+    def aggregate_detections(self, detections: List[Detection],
+                             mode: str = "max",
+                             alert_threshold: float = 0.0,
+                             vote_k: int = 1) -> Detection:
+        """Combine per-frame detections into one clip-level verdict.
+
+        mode='max' (default, deter path): return the best heron detection
+        across frames. Max-pooling is the right choice when latency matters
+        and a false positive is cheap.
+
+        mode='vote' (alert path): return heron ONLY if at least `vote_k` of
+        the input frames scored `alert_threshold` or higher on heron. Anything
+        less is downgraded to 'unknown' so it lands in the recording bucket
+        but does not fire an alert.
+
+        Why voting for the alert path: max-pooling over five key frames gives
+        a spurious spike five independent chances to clear the alert threshold
+        — the opposite of temporal filtering. If a heron is really there it
+        will register on several frames; a wobble on one frame will not.
+        Nothing about this changes the deter path, which still fires on a
+        single trigger frame outside aggregate_detections.
+        """
+        if mode == "vote":
+            heron_hits = [d for d in detections
+                          if d.label == "heron" and d.confidence >= alert_threshold]
+            if len(heron_hits) >= vote_k:
+                return max(heron_hits, key=lambda d: d.confidence)
+            # Not enough sustained heron frames — do not upgrade to a heron
+            # alert. Preserve any other known label if the detector saw one.
+            known = [d for d in detections
+                     if d.label not in ("heron", "unknown")]
+            if known:
+                return max(known, key=lambda d: d.confidence)
+            return Detection(label="unknown", confidence=0.0)
+
+        # Legacy max-pool behaviour, still used by the deter path.
         heron = [d for d in detections if d.label == "heron"]
         if heron:
             return max(heron, key=lambda d: d.confidence)

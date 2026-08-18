@@ -80,8 +80,21 @@ class HeronDeterrentSystem:
         labels_config = self.config.get('ai.labels', {})
         labels = {int(k): v for k, v in labels_config.items()} if labels_config else None
 
-        confidence_threshold = self.config.get('ai.confidence_threshold', 0.6)
-        self.detector = ObjectDetector(self.model_loader, confidence_threshold, labels=labels)
+        # Two thresholds now. The detector's internal anchor filter uses the
+        # LOWER of them so both decision paths see the boxes they need. Config
+        # falls back to the old single `confidence_threshold` if the split keys
+        # are absent, so an older config file still boots.
+        fallback = self.config.get('ai.confidence_threshold', 0.90)
+        self.deter_threshold = self.config.get('ai.deter_threshold', fallback)
+        self.alert_threshold = self.config.get('ai.alert_threshold', fallback)
+        self.alert_vote_k = self.config.get('ai.alert_vote_k', 3)
+        self.alert_vote_m = self.config.get('ai.alert_vote_m', 5)
+        anchor_floor = min(self.deter_threshold, self.alert_threshold)
+        self.detector = ObjectDetector(self.model_loader, anchor_floor, labels=labels)
+        logger.info(
+            f"Thresholds: deter={self.deter_threshold}  alert={self.alert_threshold}  "
+            f"vote={self.alert_vote_k}/{self.alert_vote_m}"
+        )
 
         # Audio player — raises if sounds/ is empty
         sound_path = self.config.get('audio.sound_path', './sounds/')
@@ -163,17 +176,28 @@ class HeronDeterrentSystem:
         return [video_clip[i * step] for i in range(num_frames)]
 
     def process_detection_event(self, video_clip: list):
-        """Aggregate over key frames. Used by the dashboard's test-upload path."""
+        """Aggregate over key frames using N-of-M voting on the ALERT threshold.
+
+        Used by the dashboard's test-upload path and by the fallback pass when
+        the trigger frame was inconclusive. The deter path never touches this
+        function — it fires on the trigger frame directly, so its latency and
+        false-positive profile are unaffected by anything here.
+        """
         logger.info("Processing detection event...")
 
-        key_frames = self.extract_key_frames(video_clip)
+        key_frames = self.extract_key_frames(video_clip, num_frames=self.alert_vote_m)
 
         detections = []
         for frame in key_frames:
             detection = self.detector.infer(frame)
             detections.append(detection)
 
-        final_detection = self.detector.aggregate_detections(detections)
+        final_detection = self.detector.aggregate_detections(
+            detections,
+            mode="vote",
+            alert_threshold=self.alert_threshold,
+            vote_k=self.alert_vote_k,
+        )
 
         video_path = self.media_store.save_video_clip(video_clip, final_detection.label)
 
@@ -191,17 +215,29 @@ class HeronDeterrentSystem:
         try:
             detection = self.detector.infer(trigger_frame)
 
-            if detection.label == "heron":
-                logger.warning("HERON DETECTED on trigger frame")
+            # The detector's anchor filter runs at min(deter, alert), so
+            # detection.label == 'heron' is necessary but not sufficient — gate
+            # the deter path on deter_threshold explicitly. Anything below deter
+            # falls through to the full-clip pass (which uses N-of-M voting on
+            # alert_threshold) so a genuinely-there bird still gets its clip
+            # recorded and its alert raised.
+            if detection.label == "heron" and detection.confidence >= self.deter_threshold:
+                logger.warning(
+                    f"HERON DETECTED on trigger frame (conf={detection.confidence:.3f} "
+                    f">= deter={self.deter_threshold})"
+                )
                 self.trigger_deterrent()          # first, before anything slow
                 video_clip = self.capture_video_clip(duration_seconds=5)
                 video_path = self.media_store.save_video_clip(video_clip, detection.label)
                 self.alert_manager.create_alert("CRITICAL", detection, video_path)
                 return
 
-            # Inconclusive: fall back to the thorough multi-frame pass so a bird
-            # that was mid-wingbeat or half out of frame is not written off.
-            logger.info("Trigger frame inconclusive — capturing clip for full pass")
+            # Inconclusive OR under deter threshold: fall back to the thorough
+            # multi-frame pass with voting on the alert threshold.
+            logger.info(
+                f"Trigger frame inconclusive (label={detection.label} "
+                f"conf={detection.confidence:.3f}) — capturing clip for voting pass"
+            )
             video_clip = self.capture_video_clip(duration_seconds=5)
             self.process_detection_event(video_clip)
 
