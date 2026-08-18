@@ -6,6 +6,28 @@
 # so config.yaml stops carrying numbers no-one can reproduce. Also prints
 # the exact YAML block to paste into config.
 #
+# ------------------------------------------------------------------
+# GROUND-TRUTH PRINCIPLE — READ THIS BEFORE CHANGING DEFAULTS
+# ------------------------------------------------------------------
+#
+# Directory names under media/ are the model's PREDICTIONS, never ground
+# truth. media/heron/ contains clips the CURRENT MODEL called heron. It
+# does not contain herons. On the deployed hardware today, every clip in
+# media/ (both media/heron/ and media/unknown/) is bench footage of the
+# same indoor scene — a person in a black polo shirt, no bird in frame at
+# any point. That is why the ~0.9 scores on those clips are false
+# positives worth measuring, not successes worth counting.
+#
+# Anyone reaching for media/heron/ as a positives set is reading the
+# model's opinion of itself. Do not do this. Ground truth lives in
+# directories a human curated:
+#
+#   * negatives — media/ (recursive, WITHOUT excluding media/heron/)
+#     Every frame in there is a verified true negative today.
+#   * positives — ../heron-data/heron_project/dataset/val/images/
+#     44 real heron images. Same stock-photo domain as training, so they
+#     flatter the model; they are provisional until field positives exist.
+#
 # WHY THIS EXISTS
 #
 # The old config.yaml claimed ai.confidence_threshold=0.75 was "clear of the
@@ -18,23 +40,22 @@
 # This script is the reproducible replacement. If you disagree with the
 # suggested thresholds, run it, argue about the numbers instead of the vibe.
 #
-# CAVEAT ABOUT POSITIVES
+# WHY THE OVERLAP GUARD EXISTS
 #
-# The default positives set is media/heron/, which contains clips the
-# CURRENT MODEL flagged as heron. That is circular: measuring the model on
-# its own confident outputs will look better than it is, because we never
-# see the frames it should have caught but didn't. Recall numbers from this
-# script are an upper bound, not the truth. Real recall needs a manually
-# curated positives set (e.g. once the labelling flow has produced one).
-#
-# Point --positives at a directory of PNG/JPG files or MP4 clips whose
-# ground truth you trust, and the recall figure becomes meaningful.
+# An earlier version of this script defaulted --positives to media/heron/
+# and --negatives to media/, then silently subtracted the positives from
+# the negatives to avoid double-counting. That silent subtraction hid two
+# errors at once: 175 frames of the model's WORST false positives were
+# being counted as positives, AND those same frames were being removed
+# from the negatives pool. Both errors flattered the model. Now the two
+# sets are required to be disjoint, and a non-empty intersection aborts
+# the run rather than being silently reconciled.
 #
 # USAGE
 #
 #   python tools/measure_thresholds.py
-#   python tools/measure_thresholds.py --positives ./data/positives \
-#                                      --negatives ./media \
+#   python tools/measure_thresholds.py --positives /path/to/heron_images \
+#                                      --negatives /path/to/no_heron_clips \
 #                                      --step 5 --k 3 --m 5
 # ============================================================
 
@@ -52,9 +73,14 @@ from ai.detector import ObjectDetector             # noqa: E402
 from ai.model_loader import ModelLoader            # noqa: E402
 from utils.config_loader import Config             # noqa: E402
 
-# Extract every Nth frame from each clip. 5 keeps the sample dense enough
-# for a distribution but skips near-duplicate consecutive frames.
-DEFAULT_STEP = 5
+# Extract every Nth frame from each clip. Default 1 = every frame, because
+# skipping frames systematically misses the tails of the score distribution,
+# and the tail of the negatives distribution is exactly what governs how safe
+# a threshold is. An earlier default of 5 gave the negatives max as 0.840 on
+# footage whose true max is 0.894 — a 0.054 flattery gap that would tempt a
+# reader into lowering the deter threshold. Pass --step >1 only if inference
+# cost forces you to.
+DEFAULT_STEP = 1
 
 # Model-level threshold used only for finding the "best anchor per frame".
 # We want the raw score distribution, not filtered detections.
@@ -191,15 +217,81 @@ def describe(name: str, vals: List[float]) -> None:
     print(f"  max: {max(vals):.3f}   mean: {sum(vals) / len(vals):.3f}")
 
 
+# Defaults are separated so tests and the guard can reference them by name.
+# See the header for the ground-truth principle these encode.
+DEFAULT_POSITIVES = Path('../heron-data/heron_project/dataset/val/images')
+DEFAULT_NEGATIVES = Path('media')
+
+
+class OverlappingSetsError(RuntimeError):
+    """Positives and negatives share at least one file, or one directory is
+    nested under the other. The two sets must be disjoint or the measurement
+    is measuring itself."""
+
+
+def check_disjoint(pos_files: List[Path], neg_files: List[Path],
+                   pos_root: Path, neg_root: Path) -> None:
+    """Refuse to run if positives and negatives overlap.
+
+    Two cases both count as overlap:
+      1. A file appears in both lists (same resolved path).
+      2. One root is inside the other. Even if no files overlap today, this
+         is the exact shape of the old bug where --positives=media/heron and
+         --negatives=media silently subtracted one from the other. Fail before
+         the numbers get published.
+
+    An empty positives set is a separate error (nothing to measure), reported
+    upstream with more context — not conflated with overlap here.
+    """
+    # Structural checks first — the resulting error message points at the
+    # config problem (--positives vs --negatives) rather than the resulting
+    # file collision, which is downstream.
+    pos_root_r = pos_root.resolve()
+    neg_root_r = neg_root.resolve()
+    if pos_root_r == neg_root_r:
+        raise OverlappingSetsError(
+            f"--positives and --negatives point at the same directory "
+            f"({pos_root_r}). One set is entirely inside the other."
+        )
+    if pos_root_r in neg_root_r.parents:
+        raise OverlappingSetsError(
+            f"--negatives ({neg_root_r}) is nested under --positives "
+            f"({pos_root_r}). One set is entirely inside the other; the "
+            f"previous silent-subtraction bug lived in exactly this shape."
+        )
+    if neg_root_r in pos_root_r.parents:
+        raise OverlappingSetsError(
+            f"--positives ({pos_root_r}) is nested under --negatives "
+            f"({neg_root_r}). One set is entirely inside the other; the "
+            f"previous silent-subtraction bug lived in exactly this shape."
+        )
+
+    # Structurally disjoint, but a specific file may still be listed twice
+    # (symlink, hard link, duplicate placement). Catch that too.
+    pos_resolved = {p.resolve() for p in pos_files}
+    neg_resolved = {p.resolve() for p in neg_files}
+    shared = pos_resolved & neg_resolved
+    if shared:
+        sample = sorted(str(p) for p in list(shared)[:3])
+        raise OverlappingSetsError(
+            f"positives and negatives share {len(shared)} file(s), e.g.:\n  "
+            + "\n  ".join(sample)
+            + "\nGround truth requires disjoint sets. Point --positives and "
+              "--negatives at unrelated directories."
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--positives', type=Path, default=Path('media/heron'),
-                    help="dir of images or MP4s containing herons "
-                         "(default: media/heron — CIRCULAR; see script header)")
-    ap.add_argument('--negatives', type=Path, default=Path('media'),
-                    help="dir of images or MP4s containing NO herons "
-                         "(default: media, walked recursively)")
+    ap.add_argument('--positives', type=Path, default=DEFAULT_POSITIVES,
+                    help=f"dir of images or MP4s containing herons "
+                         f"(default: {DEFAULT_POSITIVES} — 44 stock heron "
+                         f"images, provisional until field positives exist)")
+    ap.add_argument('--negatives', type=Path, default=DEFAULT_NEGATIVES,
+                    help=f"dir of images or MP4s containing NO herons "
+                         f"(default: {DEFAULT_NEGATIVES}, walked recursively; "
+                         f"every clip in there is a verified true negative)")
     ap.add_argument('--step', type=int, default=DEFAULT_STEP,
                     help=f"take every Nth frame from each clip (default {DEFAULT_STEP})")
     ap.add_argument('--k', type=int, default=3,
@@ -208,6 +300,20 @@ def main():
                     help="N-of-M voting: window size (default 5, matches key-frame count)")
     args = ap.parse_args()
 
+    if not args.positives.exists():
+        print(f"ERROR: positives directory not found: {args.positives}\n"
+              f"  Point --positives at a curated set of heron images or clips.\n"
+              f"  Default expects ../heron-data/heron_project/dataset/val/images/\n"
+              f"  next to this repo. Clone or symlink heron-data alongside "
+              f"heron_deterrent, or pass --positives explicitly.",
+              file=sys.stderr)
+        return 2
+
+    if not args.negatives.exists():
+        print(f"ERROR: negatives directory not found: {args.negatives}",
+              file=sys.stderr)
+        return 2
+
     config = Config('config.yaml')
     loader = ModelLoader(config.get('ai.target', 'cpu'),
                          config.get('ai.num_threads', 4))
@@ -215,14 +321,17 @@ def main():
     detector = ObjectDetector(loader, confidence_threshold=SCORE_FLOOR,
                               labels=labels or None)
 
+    # ---- Collect file lists and refuse overlap -----------------------------
+    pos_files = collect_paths(args.positives)
+    neg_files = collect_paths(args.negatives)
+    try:
+        check_disjoint(pos_files, neg_files, args.positives, args.negatives)
+    except OverlappingSetsError as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        return 2
+
     # ---- Negatives ---------------------------------------------------------
     print(f"\n=== Negatives ({args.negatives}) ===", file=sys.stderr)
-    neg_files = collect_paths(args.negatives)
-    # Exclude positives if they live under the negatives root
-    if args.positives.exists():
-        pos_resolved = args.positives.resolve()
-        neg_files = [p for p in neg_files
-                     if pos_resolved not in p.resolve().parents]
     print(f"  {len(neg_files)} file(s)", file=sys.stderr)
     neg_frame_scores = frame_scores(neg_files, detector, args.step, 'neg')
 
@@ -235,7 +344,6 @@ def main():
 
     # ---- Positives ---------------------------------------------------------
     print(f"\n=== Positives ({args.positives}) ===", file=sys.stderr)
-    pos_files = collect_paths(args.positives)
     print(f"  {len(pos_files)} file(s)", file=sys.stderr)
     pos_frame_scores = frame_scores(pos_files, detector, args.step, 'pos')
     pos_per_clip = []
@@ -307,18 +415,46 @@ def main():
     print(f"    intent:     record + notify only when the clip sustains a heron "
           f"call across frames.")
 
+    # ---- What the CURRENT config would score ------------------------------
+    # Shipping this alongside the suggestion lets a reader compare instead of
+    # blindly copying. The suggested numbers are one policy (p99 + margin);
+    # they are not the only defensible choice, especially on small samples.
+    current_deter = config.get('ai.deter_threshold',
+                               config.get('ai.confidence_threshold', 0.90))
+    current_alert = config.get('ai.alert_threshold',
+                               config.get('ai.confidence_threshold', 0.95))
+    current_k = config.get('ai.alert_vote_k', args.k)
+    if neg_frame_scores:
+        cur_deter_fpr = sum(s >= current_deter for s in neg_frame_scores) / len(neg_frame_scores)
+    else:
+        cur_deter_fpr = float('nan')
+    cur_deter_recall = (sum(s >= current_deter for s in pos_frame_scores)
+                        / max(len(pos_frame_scores), 1))
+    if pos_per_clip and neg_per_clip:
+        cur_alert_recall = voting_recall(pos_per_clip, current_alert, current_k)
+        cur_alert_prec   = voting_precision_proxy(neg_per_clip, current_alert, current_k)
+    else:
+        cur_alert_recall = cur_alert_prec = float('nan')
+
+    print("\n" + "-" * 60)
+    print("Current config for comparison")
+    print(f"  ai.deter_threshold={current_deter}: recall={cur_deter_recall:.2f}  "
+          f"fpr={cur_deter_fpr:.3f}")
+    print(f"  ai.alert_threshold={current_alert} @ {current_k}-of-{args.m}: "
+          f"recall={cur_alert_recall:.2f}  precision-proxy={cur_alert_prec:.2f}")
+
     print(f"\nCopy into config.yaml -> ai:")
     print(f"  deter_threshold: {deter}")
     print(f"  alert_threshold: {alert_t}")
     print(f"  alert_vote_k: {args.k}")
     print(f"  alert_vote_m: {args.m}")
 
-    if args.positives.name == 'heron' and 'media' in str(args.positives):
-        print("\nNOTE: --positives defaulted to media/heron/, which is what the "
-              "CURRENT model classified as heron. Recall above is optimistic. "
-              "Re-run with --positives pointing at a curated set once the "
+    if args.positives == DEFAULT_POSITIVES:
+        print("\nNOTE: --positives is the val split of the stock training dataset. "
+              "Same domain as training, so recall above flatters the model. "
+              "Point --positives at a curated field-labelled set once the "
               "dashboard has produced one.")
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)
