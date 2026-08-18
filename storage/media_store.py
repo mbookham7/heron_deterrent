@@ -82,8 +82,33 @@ class MediaStore:
             logger.error(f"Failed to save video: {e}")
             return ""
     
-    def save_labeled_image(self, image: np.ndarray, label: str, 
+    def save_labeled_image(self, image: np.ndarray, label: str,
                           bboxes: List[Tuple], detection_id: int) -> Tuple[str, str]:
+        # DISAMBIGUATING OLD EMPTY .txt FILES
+        # -----------------------------------
+        # An empty .txt under labeled/labels/ has two possible provenances:
+        #
+        #   * INTENDED: label was 'cat'/'dog'/'bird'/'person'/'unknown'. Empty
+        #     annotation is the correct YOLO convention for a background
+        #     (negative) example. Keep it.
+        #   * BUG:      label was 'heron' and the UI sent bboxes=[] because the
+        #     old dashboard hard-coded that. Trains the model that the frame
+        #     contains NO heron. Delete or re-label.
+        #
+        # They are tellable apart from the filename: base_name is
+        # 'labeled_{detection_id}_{timestamp}', so the detection ID is in the
+        # path. Join to the detections table on that id:
+        #
+        #   sqlite> SELECT id, user_label FROM detections WHERE id IN (
+        #             SELECT DISTINCT CAST(substr(basename, 9,
+        #                     instr(substr(basename, 9), '_') - 1) AS INTEGER)
+        #             FROM (<empty .txt basenames>)
+        #           );
+        #
+        # user_label = 'heron' + empty .txt = bug. Anything else + empty .txt =
+        # correct behaviour. No repair script ships here because labeled/ is
+        # currently empty — nothing was ever harmed. If an older device turns
+        # up with a populated labeled/, use the join above to disambiguate.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         base_name = f"labeled_{detection_id}_{timestamp}"
         
