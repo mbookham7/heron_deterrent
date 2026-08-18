@@ -70,7 +70,8 @@ class AlertManager:
             label=detection.label,
             confidence=detection.confidence,
             video_path=video_path,
-            metadata={'type': alert_type}
+            metadata={'type': alert_type},
+            bbox=detection.bbox,
         )
 
         alert_id = self.database.save_alert(

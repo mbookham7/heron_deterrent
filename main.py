@@ -226,7 +226,8 @@ class HeronDeterrentSystem:
                 label=detection.label,
                 confidence=detection.confidence,
                 video_path=video_path,
-                metadata={'type': 'INFO'}
+                metadata={'type': 'INFO'},
+                bbox=detection.bbox,
             )
 
     def trigger_deterrent(self):

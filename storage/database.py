@@ -21,6 +21,7 @@ class Database:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
+        self._migrate()
 
     def _create_tables(self):
         with self._lock:
@@ -35,7 +36,8 @@ class Database:
                     video_path TEXT,
                     metadata TEXT,
                     manually_labeled BOOLEAN DEFAULT 0,
-                    user_label TEXT
+                    user_label TEXT,
+                    bbox TEXT
                 )
             ''')
 
@@ -63,14 +65,36 @@ class Database:
 
             self.conn.commit()
 
+    def _migrate(self):
+        """Apply any schema changes needed for a database created by an older
+        version. Idempotent — a fresh DB has the column via CREATE TABLE above.
+
+        The only migration today: add `bbox` to detections. It exists so we can
+        keep the model's box once we have it, instead of recomputing every time
+        (or, worse, throwing it away and needing manual annotation later)."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            cols = {row['name'] for row in cursor.execute('PRAGMA table_info(detections)')}
+            if 'bbox' not in cols:
+                # SQLite's ALTER TABLE is limited but ADD COLUMN is safe and
+                # constant-time (metadata-only) since NULL is the default.
+                cursor.execute('ALTER TABLE detections ADD COLUMN bbox TEXT')
+                self.conn.commit()
+
     def save_detection(self, label: str, confidence: float,
-                      video_path: str, metadata: Dict[str, Any]) -> int:
+                      video_path: str, metadata: Dict[str, Any],
+                      bbox: Optional[tuple] = None) -> int:
+        """Persist a detection. `bbox` is (x, y, w, h) normalised 0-1 against
+        the ORIGINAL frame — same units as Detection.bbox — or None. Stored as
+        JSON so downstream queries can pull it out with json_extract().
+        """
         with self._lock:
             cursor = self.conn.cursor()
             cursor.execute('''
-                INSERT INTO detections (label, confidence, video_path, metadata)
-                VALUES (?, ?, ?, ?)
-            ''', (label, confidence, video_path, json.dumps(metadata)))
+                INSERT INTO detections (label, confidence, video_path, metadata, bbox)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (label, confidence, video_path, json.dumps(metadata),
+                  json.dumps(list(bbox)) if bbox is not None else None))
             self.conn.commit()
             return cursor.lastrowid
 
