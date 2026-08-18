@@ -510,6 +510,135 @@
         }
 
         .empty-icon { font-size: 28px; margin-bottom: 8px; }
+
+        /* ── Label modal ── */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 500;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-backdrop.open { display: flex; }
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border-hi);
+            border-radius: var(--radius);
+            width: min(1000px, 96vw);
+            max-height: 92vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .modal-body {
+            padding: 12px 16px;
+            overflow-y: auto;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-dim);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0 6px;
+        }
+        .modal-close:hover { color: var(--text); }
+
+        .canvas-wrap {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .canvas-wrap img,
+        .canvas-wrap canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+        }
+        .canvas-wrap canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: crosshair;
+        }
+
+        .frame-nav {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .frame-nav input[type="range"] {
+            flex: 1;
+        }
+        .frame-counter {
+            font-size: 12px;
+            color: var(--text-dim);
+            min-width: 90px;
+            text-align: center;
+        }
+
+        .box-list {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .box-list .box-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .box-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            background: var(--yellow);
+        }
+        .box-remove {
+            background: none;
+            border: none;
+            color: var(--red);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 4px;
+        }
+
+        .label-err {
+            display: none;
+            margin-top: 8px;
+            padding: 8px 10px;
+            background: rgba(248,81,73,0.10);
+            border: 1px solid rgba(248,81,73,0.30);
+            border-radius: 4px;
+            color: var(--red);
+            font-size: 12px;
+        }
+        .label-err.show { display: block; }
+
+        .label-btn {
+            font-size: 11px;
+            padding: 3px 8px;
+            background: var(--border);
+            color: var(--text);
+            border: 1px solid var(--border-hi);
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: auto;
+        }
+        .label-btn:hover { border-color: var(--blue); color: var(--blue); }
     </style>
 </head>
 <body>
@@ -617,22 +746,9 @@
             <div class="det-list" id="unclass-list">
                 <div class="empty"><div class="empty-icon">🔍</div>Nothing unclassified</div>
             </div>
-            <div class="card-body">
-                <div class="label-tool">
-                    <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;">Label a detection</div>
-                    <div class="form-row">
-                        <input class="form-input" type="number" id="detection-id" placeholder="Detection ID" min="1">
-                        <select class="form-select" id="label-select">
-                            <option value="heron">Heron</option>
-                            <option value="cat">Cat</option>
-                            <option value="dog">Dog</option>
-                            <option value="bird">Other Bird</option>
-                            <option value="person">Person</option>
-                            <option value="unknown">Unknown</option>
-                        </select>
-                        <button class="btn btn-primary" onclick="submitLabel()">Save</button>
-                    </div>
-                </div>
+            <div class="card-body" style="font-size:12px; color:var(--text-mute);">
+                Click <strong>Label</strong> on any detection above (or in the heron gallery) to
+                step through its frames and draw boxes.
             </div>
         </div>
 
@@ -678,6 +794,53 @@
             </div>
         </div>
 
+    </div>
+</div>
+
+<!-- Label modal -->
+<div class="modal-backdrop" id="label-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="label-title">
+        <div class="modal-header">
+            <span class="card-title" id="label-title">Label detection</span>
+            <button class="modal-close" onclick="closeLabelModal()" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="canvas-wrap" id="canvas-wrap">
+                <img id="label-image" alt="frame">
+                <canvas id="label-canvas"></canvas>
+            </div>
+
+            <div class="frame-nav">
+                <button class="btn btn-subtle" onclick="stepFrame(-1)" title="Previous frame (←)">◀</button>
+                <input type="range" id="frame-slider" min="0" max="0" value="0"
+                       oninput="jumpToFrame(this.value)">
+                <button class="btn btn-subtle" onclick="stepFrame(1)" title="Next frame (→)">▶</button>
+                <span class="frame-counter" id="frame-counter">frame 0 / 0</span>
+            </div>
+
+            <div class="form-row" style="margin-top:12px;">
+                <select class="form-select" id="modal-label-select">
+                    <option value="heron">Heron (draw box)</option>
+                    <option value="cat">Cat</option>
+                    <option value="dog">Dog</option>
+                    <option value="bird">Other Bird</option>
+                    <option value="person">Person</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+                <button class="btn btn-subtle" onclick="undoBox()" title="Undo last box (Ctrl-Z)">Undo</button>
+                <button class="btn btn-subtle" onclick="clearBoxes()">Clear</button>
+                <button class="btn btn-primary" onclick="saveLabel()">Save</button>
+            </div>
+
+            <div class="box-list" id="box-list"></div>
+            <div class="label-err" id="label-err"></div>
+
+            <div style="margin-top:10px; font-size:11px; color:var(--text-mute);">
+                Draw with click-and-drag. Every "heron" label needs at least one box; other
+                labels are written as background examples (empty annotation) — that is the
+                correct YOLO convention for single-class training.
+            </div>
+        </div>
     </div>
 </div>
 
@@ -882,6 +1045,7 @@
                     <div class="det-label" style="color:var(--text-dim)">ID ${d.id}</div>
                     <div class="conf-bar-wrap" style="font-size:12px; color:var(--text-dim);">unknown object</div>
                     <div class="det-time">${timeAgo(d.timestamp)}</div>
+                    <button class="label-btn" onclick="openLabelModal(${d.id})">Label</button>
                 </div>`
             ).join('');
         } catch {}
@@ -915,6 +1079,8 @@
                         <div class="gallery-meta">
                             <div class="gallery-conf">${pct}% confident</div>
                             <div class="gallery-time">${timeAgo(d.timestamp)}</div>
+                            <button class="label-btn" style="margin-top:6px; margin-left:0;"
+                                    onclick="openLabelModal(${d.id})">Label</button>
                         </div>
                     </div>`;
             }).join('');
@@ -936,29 +1102,275 @@
         }
     }
 
-    // ── Label submission ─────────────────────────────────────────────
-    async function submitLabel() {
-        const id    = document.getElementById('detection-id').value;
-        const label = document.getElementById('label-select').value;
+    // ── Label modal ─────────────────────────────────────────────────
+    // State for the currently-open label modal.
+    //
+    // Three coordinate systems live in here — see tests/test_label_coords.py.
+    //   * canvas pixels     — mouse events
+    //   * displayed image   — same as canvas (the canvas is sized to the img)
+    //   * native frame      — what goes on the wire
+    //
+    // boxes are stored in NATIVE pixel coords so a browser resize does not
+    // silently move them. Drawing scales them back to canvas coords each frame.
+    const labelState = {
+        detectionId: null,
+        frameIndex: 0,
+        frameCount: 0,
+        nativeW: 0,
+        nativeH: 0,
+        boxes: [],           // {x, y, w, h} in NATIVE pixel coords
+        drawing: null,       // {startX, startY, curX, curY} in canvas coords
+    };
 
-        if (!id) { toast('Please enter a detection ID', 'info'); return; }
+    async function openLabelModal(detectionId) {
+        labelState.detectionId = detectionId;
+        labelState.frameIndex = 0;
+        labelState.boxes = [];
+        labelState.drawing = null;
+        clearLabelError();
+
+        try {
+            const r = await fetch(`/api/detection/${detectionId}/frame-info`);
+            if (!r.ok) throw new Error(await r.text());
+            const info = await r.json();
+            labelState.frameCount = info.frame_count;
+            labelState.nativeW = info.width;
+            labelState.nativeH = info.height;
+        } catch (e) {
+            toast('Cannot load clip: ' + e.message, 'error');
+            return;
+        }
+
+        document.getElementById('label-title').textContent =
+            `Label detection ${detectionId} — native ${labelState.nativeW}x${labelState.nativeH}`;
+        document.getElementById('frame-slider').max = Math.max(labelState.frameCount - 1, 0);
+        document.getElementById('frame-slider').value = 0;
+        document.getElementById('modal-label-select').value = 'heron';
+
+        document.getElementById('label-modal').classList.add('open');
+        await loadFrame(0);
+    }
+
+    function closeLabelModal() {
+        document.getElementById('label-modal').classList.remove('open');
+        labelState.detectionId = null;
+    }
+
+    async function loadFrame(index) {
+        const img = document.getElementById('label-image');
+        labelState.frameIndex = index;
+        // Cache-bust: same URL for the same (id, index) would otherwise reuse
+        // a stale image if the video path is ever recycled.
+        img.src = `/api/detection/${labelState.detectionId}/frame/${index}?t=${Date.now()}`;
+        await img.decode().catch(() => {});
+        resizeCanvas();
+        redrawBoxes();
+        updateFrameCounter();
+    }
+
+    function stepFrame(delta) {
+        if (!labelState.frameCount) return;
+        const next = Math.max(0,
+                     Math.min(labelState.frameCount - 1, labelState.frameIndex + delta));
+        document.getElementById('frame-slider').value = next;
+        loadFrame(next);
+    }
+
+    function jumpToFrame(v) {
+        loadFrame(parseInt(v, 10) || 0);
+    }
+
+    function updateFrameCounter() {
+        document.getElementById('frame-counter').textContent =
+            `frame ${labelState.frameIndex + 1} / ${labelState.frameCount}`;
+    }
+
+    function resizeCanvas() {
+        const img = document.getElementById('label-image');
+        const canvas = document.getElementById('label-canvas');
+        // Use clientWidth/Height so the canvas overlays whatever CSS decided
+        // the img is displayed at. naturalWidth/Height is the browser's view
+        // of the source; we store native separately (from the API) because a
+        // JPEG can theoretically differ from the video's own dims.
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+    }
+
+    function nativeToCanvas(box) {
+        const canvas = document.getElementById('label-canvas');
+        const sx = canvas.width / labelState.nativeW;
+        const sy = canvas.height / labelState.nativeH;
+        return { x: box.x * sx, y: box.y * sy, w: box.w * sx, h: box.h * sy };
+    }
+
+    function canvasToNative(cx, cy, cw, ch) {
+        const canvas = document.getElementById('label-canvas');
+        const sx = labelState.nativeW / canvas.width;
+        const sy = labelState.nativeH / canvas.height;
+        return { x: cx * sx, y: cy * sy, w: cw * sx, h: ch * sy };
+    }
+
+    function redrawBoxes() {
+        const canvas = document.getElementById('label-canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#d29922'; // yellow
+        ctx.font = '11px system-ui';
+        ctx.fillStyle = 'rgba(210,153,34,0.85)';
+        labelState.boxes.forEach((b, i) => {
+            const c = nativeToCanvas(b);
+            ctx.strokeRect(c.x, c.y, c.w, c.h);
+            ctx.fillText(String(i + 1), c.x + 3, c.y + 12);
+        });
+        if (labelState.drawing) {
+            const {startX, startY, curX, curY} = labelState.drawing;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = '#58a6ff';
+            ctx.strokeRect(startX, startY,
+                           curX - startX, curY - startY);
+            ctx.setLineDash([]);
+        }
+        renderBoxList();
+    }
+
+    function renderBoxList() {
+        const el = document.getElementById('box-list');
+        if (!labelState.boxes.length) { el.innerHTML = ''; return; }
+        el.innerHTML = labelState.boxes.map((b, i) => `
+            <div class="box-row">
+                <span class="box-swatch"></span>
+                <span>box ${i + 1}: ${Math.round(b.x)},${Math.round(b.y)}
+                      ${Math.round(b.w)}×${Math.round(b.h)}px (native)</span>
+                <button class="box-remove" onclick="removeBox(${i})"
+                        title="Delete this box">✕</button>
+            </div>`).join('');
+    }
+
+    function removeBox(i) {
+        labelState.boxes.splice(i, 1);
+        redrawBoxes();
+    }
+
+    function undoBox() {
+        if (labelState.boxes.length) labelState.boxes.pop();
+        redrawBoxes();
+    }
+
+    function clearBoxes() {
+        labelState.boxes = [];
+        redrawBoxes();
+    }
+
+    function clearLabelError() {
+        const e = document.getElementById('label-err');
+        e.classList.remove('show');
+        e.textContent = '';
+    }
+
+    function showLabelError(msg) {
+        const e = document.getElementById('label-err');
+        e.textContent = msg;
+        e.classList.add('show');
+    }
+
+    // ── Canvas mouse handling ──────────────────────────────────────
+    (function wireCanvas() {
+        const canvas = document.getElementById('label-canvas');
+
+        function pos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (evt.clientX - rect.left) * (canvas.width / rect.width),
+                y: (evt.clientY - rect.top)  * (canvas.height / rect.height),
+            };
+        }
+
+        canvas.addEventListener('mousedown', evt => {
+            if (!labelState.detectionId) return;
+            const p = pos(evt);
+            labelState.drawing = {startX: p.x, startY: p.y, curX: p.x, curY: p.y};
+        });
+        canvas.addEventListener('mousemove', evt => {
+            if (!labelState.drawing) return;
+            const p = pos(evt);
+            labelState.drawing.curX = p.x;
+            labelState.drawing.curY = p.y;
+            redrawBoxes();
+        });
+        function finish(evt) {
+            if (!labelState.drawing) return;
+            const p = pos(evt);
+            const {startX, startY} = labelState.drawing;
+            labelState.drawing = null;
+            // Normalise to (x, y, w, h) with positive w/h regardless of drag dir
+            const cx = Math.min(startX, p.x);
+            const cy = Math.min(startY, p.y);
+            const cw = Math.abs(p.x - startX);
+            const ch = Math.abs(p.y - startY);
+            if (cw < 4 || ch < 4) { redrawBoxes(); return; } // ignore stray click
+            labelState.boxes.push(canvasToNative(cx, cy, cw, ch));
+            clearLabelError();
+            redrawBoxes();
+        }
+        canvas.addEventListener('mouseup',   finish);
+        canvas.addEventListener('mouseleave', evt => {
+            if (labelState.drawing) finish(evt);
+        });
+    })();
+
+    // Redraw on window resize so overlaid boxes track the image.
+    window.addEventListener('resize', () => {
+        if (!labelState.detectionId) return;
+        resizeCanvas(); redrawBoxes();
+    });
+
+    document.addEventListener('keydown', evt => {
+        if (!document.getElementById('label-modal').classList.contains('open')) return;
+        if (evt.key === 'ArrowLeft')  { stepFrame(-1); evt.preventDefault(); }
+        if (evt.key === 'ArrowRight') { stepFrame(1);  evt.preventDefault(); }
+        if (evt.key === 'Escape')     { closeLabelModal(); }
+        if ((evt.ctrlKey || evt.metaKey) && evt.key === 'z') {
+            undoBox(); evt.preventDefault();
+        }
+    });
+
+    async function saveLabel() {
+        const label = document.getElementById('modal-label-select').value;
+        if (label === 'heron' && labelState.boxes.length === 0) {
+            showLabelError("Draw at least one box before saving 'heron' — an "
+                + "empty annotation would train the model that this frame contains "
+                + "no heron.");
+            return;
+        }
+        // Non-heron labels: strip boxes; the server would drop them anyway but
+        // being explicit here keeps the wire small.
+        const bboxes = (label === 'heron')
+            ? labelState.boxes.map(b => [b.x, b.y, b.w, b.h])
+            : [];
 
         try {
             const r = await fetch('/api/label', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ detection_id: parseInt(id), label, bboxes: [] })
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    detection_id: labelState.detectionId,
+                    label,
+                    frame_index: labelState.frameIndex,
+                    bboxes,
+                })
             });
             const d = await r.json();
             if (d.success) {
-                toast(`Labeled detection ${id} as "${label}"`, 'success');
-                document.getElementById('detection-id').value = '';
+                toast(`Labelled detection ${labelState.detectionId} as "${label}"`
+                      + (bboxes.length ? ` (${bboxes.length} box)` : ''), 'success');
+                closeLabelModal();
                 updateAll();
             } else {
-                toast('Error: ' + d.error, 'error');
+                showLabelError(d.error || 'save failed');
             }
-        } catch {
-            toast('Failed to submit label', 'error');
+        } catch (e) {
+            showLabelError('network error: ' + e.message);
         }
     }
 

@@ -85,43 +85,175 @@ def get_unclassified():
     unclassified = system.database.get_unclassified_detections()
     return jsonify(unclassified)
 
+# Labels that require a bounding box (only class the model is trained on).
+# Anything else is written as a background image (empty annotation), which is
+# YOLO's convention for a negative example — see save_labeled_image.
+LABELS_REQUIRING_BBOX = {'heron'}
+ALLOWED_LABELS = {'heron', 'cat', 'dog', 'bird', 'person', 'unknown'}
+
+
+def _detection_by_id(detection_id: int):
+    """The Detection row for `detection_id`, or None. Fetches enough rows to
+    cover the recent history the UI would be labelling; a lookup by id would be
+    cleaner but that would need a new database method."""
+    for d in system.database.get_detections(limit=500):
+        if d['id'] == detection_id:
+            return d
+    return None
+
+
+def _open_clip(detection_id: int):
+    """Return (cv2.VideoCapture, native_w, native_h, frame_count) or None."""
+    detection = _detection_by_id(detection_id)
+    if not detection or not detection.get('video_path'):
+        return None
+    path = Path(detection['video_path'])
+    if not path.exists():
+        return None
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        cap.release()
+        return None
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    return cap, w, h, count
+
+
+@app.route('/api/detection/<int:detection_id>/frame-info')
+def frame_info(detection_id):
+    """Native dimensions and frame count for the clip. The client needs the
+    native dimensions to scale mouse coordinates into pixel-space bboxes; a
+    guess like "640x480 always" is exactly the bug this endpoint prevents."""
+    if not system:
+        return jsonify({'error': 'System not initialized'}), 500
+    opened = _open_clip(detection_id)
+    if not opened:
+        return jsonify({'error': 'clip not found'}), 404
+    cap, w, h, count = opened
+    cap.release()
+    return jsonify({'width': w, 'height': h, 'frame_count': max(count, 1)})
+
+
+@app.route('/api/detection/<int:detection_id>/frame/<int:index>')
+def frame_jpeg(detection_id, index):
+    """Serve one frame of the clip as a JPEG, at native resolution.
+
+    Native, not display size: the client owns display scaling and must know
+    the native dimensions independently. Any resize here would be a second
+    source of scale, which is exactly how coordinate transforms drift.
+    """
+    if not system:
+        return "System not initialized", 500
+    opened = _open_clip(detection_id)
+    if not opened:
+        return "clip not found", 404
+    cap, _w, _h, count = opened
+    try:
+        idx = max(0, min(index, count - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok:
+            return "cannot decode frame", 500
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ret:
+            return "encode failed", 500
+        return Response(buffer.tobytes(), mimetype='image/jpeg')
+    finally:
+        cap.release()
+
+
 @app.route('/api/label', methods=['POST'])
 def submit_label():
+    """Persist a label for a detection and write the corresponding training file.
+
+    bboxes are (x, y, w, h) in NATIVE pixel coords — the client scales from its
+    display size to the frame's true dimensions before sending. Two vocabularies
+    to keep straight: Detection.bbox elsewhere is normalised 0-1, but
+    save_labeled_image expects pixels because it converts to YOLO's normalised
+    form itself. Don't cross them.
+
+    Empty bboxes with label='heron' is refused: an empty YOLO .txt is a
+    background/negative example, so "labelled heron with no box" would poison
+    the training set. Non-heron labels correctly write an empty file — that IS
+    the intended background example.
+    """
     if not system:
-        return jsonify({'success': False, 'error': 'System not initialized'})
+        return jsonify({'success': False, 'error': 'System not initialized'}), 500
 
     try:
-        data = request.json
+        data = request.json or {}
         detection_id = data.get('detection_id')
         label = data.get('label')
-        bboxes = data.get('bboxes', [])
+        bboxes = data.get('bboxes', []) or []
+        frame_index = int(data.get('frame_index', 0))
 
-        allowed_labels = {'heron', 'cat', 'dog', 'bird', 'person', 'unknown'}
-        if label not in allowed_labels:
-            return jsonify({'success': False, 'error': f'Invalid label: {label}'})
+        if label not in ALLOWED_LABELS:
+            return jsonify({'success': False, 'error': f'Invalid label: {label}'}), 400
+
+        if label in LABELS_REQUIRING_BBOX and not bboxes:
+            # Fail visibly. Silent empty annotations are the whole reason this
+            # endpoint was rewritten.
+            return jsonify({
+                'success': False,
+                'error': f"'{label}' requires at least one bounding box — "
+                         f"an empty label file would train the model that "
+                         f"this frame contains no heron."
+            }), 400
 
         system.database.update_manual_label(detection_id, label)
 
-        detections = system.database.get_detections()
-        detection = next((d for d in detections if d['id'] == detection_id), None)
+        opened = _open_clip(detection_id)
+        if opened:
+            cap, native_w, native_h, count = opened
+            try:
+                idx = max(0, min(frame_index, count - 1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok, frame = cap.read()
+                if not ok:
+                    return jsonify({'success': False,
+                                    'error': f'cannot decode frame {idx}'}), 500
 
-        if detection and detection['video_path']:
-            video_path = Path(detection['video_path'])
-            if video_path.exists():
-                cap = cv2.VideoCapture(str(video_path))
-                try:
-                    ret, frame = cap.read()
-                    if ret:
-                        system.media_store.save_labeled_image(frame, label, bboxes, detection_id)
-                finally:
-                    cap.release()
+                # For labels that do not require a bbox (cat/dog/bird/person/
+                # unknown), any bboxes the client sent are dropped and an empty
+                # .txt is written. That IS a valid YOLO background example.
+                write_boxes = bboxes if label in LABELS_REQUIRING_BBOX else []
+                _validate_pixel_boxes(write_boxes, native_w, native_h)
+                system.media_store.save_labeled_image(
+                    frame, label, write_boxes, detection_id
+                )
+            finally:
+                cap.release()
 
-        logger.info(f"Label submitted: detection {detection_id} -> {label}")
+        logger.info(f"Label submitted: detection {detection_id} -> {label} "
+                    f"(frame {frame_index}, {len(bboxes)} box(es))")
         return jsonify({'success': True})
 
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
-        logger.error(f"Error submitting label: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        logger.error(f"Error submitting label: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _validate_pixel_boxes(bboxes, native_w, native_h):
+    """Reject boxes that would produce a garbage YOLO line.
+
+    Refuses NaN/negative/zero-area/off-frame boxes. Cheap upfront check is
+    much better than a corrupted annotation shipped into training silently.
+    """
+    for i, b in enumerate(bboxes):
+        if len(b) != 4:
+            raise ValueError(f"bbox {i} must be [x, y, w, h]")
+        x, y, w, h = (float(v) for v in b)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"bbox {i} has non-positive size {w}x{h}")
+        if x < 0 or y < 0 or x + w > native_w + 0.5 or y + h > native_h + 0.5:
+            raise ValueError(
+                f"bbox {i} ({x:.1f},{y:.1f},{w:.1f},{h:.1f}) lies outside the "
+                f"{native_w}x{native_h} frame — client coordinate scaling may "
+                f"be wrong"
+            )
 
 @app.route('/api/trigger-deterrent', methods=['POST'])
 def trigger_deterrent():
