@@ -324,12 +324,15 @@ class HeronDeterrentSystem:
         logger.info("Starting cleanup job...")
         retention_days = self.config.get('storage.retention_days', 365)
         max_media_gb = self.config.get('storage.max_media_gb', 1.0)
+        max_labeled_gb = self.config.get('storage.max_labeled_gb', 5.0)
 
         while self.running:
             try:
                 self.database.cleanup_old_records(retention_days)
                 self.media_store.cleanup_old_media(retention_days)
                 self.media_store.enforce_size_cap(max_media_gb)
+                # Curated training data is never auto-deleted, only reported.
+                self.media_store.warn_labeled_size(max_labeled_gb)
                 time.sleep(CLEANUP_INTERVAL_SECONDS)
             except Exception as e:
                 logger.error(f"Error in cleanup: {e}")

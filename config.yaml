@@ -52,11 +52,16 @@ audio:
 
 storage:
   retention_days: 365
-  # Hard ceiling on everything under media/. Retention by age cannot protect a
-  # small card: at 100 events/day a 2 GB partition fills in about four months,
-  # long before a 365-day cutoff removes anything. Oldest clips go first.
+  # Hard ceiling on the ephemeral clip dirs (heron/, other/, unknown/). Retention
+  # by age cannot protect a small card: at 100 events/day a 2 GB partition fills
+  # in about four months, long before a 365-day cutoff removes anything. Oldest
+  # clips go first.
   # The Coral's /home is a separate 2 GB partition — check with: df -h /home
   max_media_gb: 1.0
+  # Soft warning for labeled/. NEVER causes deletion — the training data must
+  # not be silently destroyed by a size sweep. If it trips, move labeled/ off
+  # the card, do not raise the limit and forget.
+  max_labeled_gb: 5.0
   media_path: "./media/"
   db_path: "./data/heron.db"
 
