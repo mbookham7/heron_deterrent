@@ -1,5 +1,5 @@
 # ============================================================
-# FILE: ai/letterbox.py
+# FILE: ai/letterbox.py  (CANONICAL — mirrored at heron-detector/src/letterbox.py)
 #
 # The preprocessing half of the model contract.
 #
@@ -10,8 +10,8 @@
 # stretches the frame vertically by 1.33x and hands the model a shape it
 # was never trained on — worst case for a tall thin bird.
 #
-# This module is the single definition of that convention for the app.
-# It is a deliberate, exact transcription of Ultralytics' LetterBox
+# This module is the single definition of that convention. It is a
+# deliberate, exact transcription of Ultralytics' LetterBox
 # (ultralytics/data/augment.py, v8.4.121, with auto=False, scale_fill=False,
 # center=True, scaleup=True) — the same defaults its predictor uses for an
 # exported fixed-input-size model such as our .tflite. Every arithmetic
@@ -20,6 +20,11 @@
 #
 # tests/test_letterbox.py pins this against the real Ultralytics
 # implementation. Do not "tidy" the arithmetic here without running it.
+#
+# PARITY CONTRACT: this file is the canonical copy. heron-detector vendors
+# a byte-identical mirror at src/letterbox.py. Its
+# tests/test_letterbox_parity.py fails if they diverge. See SHARING.md in
+# both repos for why we vendor rather than import cross-repo.
 # ============================================================
 
 from typing import NamedTuple, Tuple
