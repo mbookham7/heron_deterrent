@@ -51,24 +51,42 @@
 # sets are required to be disjoint, and a non-empty intersection aborts
 # the run rather than being silently reconciled.
 #
+# CAMERA-SIMULATION FIX
+#
+# An earlier version letterboxed 1536x2048 stock positives straight to the
+# model's 640x640 input — the same size the letterbox produces from a 640x480
+# webcam frame, but from ~10x more source pixels and without the 4:3 crop
+# a real camera applies. Recall came out at 0.55 at deter=0.90; the honest
+# camera-simulated number is 0.42. See ai/camera_sim.py for the full story.
+# Positives are simulated by default; negatives are already camera-native
+# and are NEVER simulated. --positives-source=camera skips simulation, for
+# use with pond-labelled data as it arrives.
+#
 # USAGE
 #
 #   python tools/measure_thresholds.py
 #   python tools/measure_thresholds.py --positives /path/to/heron_images \
 #                                      --negatives /path/to/no_heron_clips \
-#                                      --step 5 --k 3 --m 5
+#                                      --positives-source stock \
+#                                      --sim-mode both \
+#                                      --step 1 --k 3 --m 5
+#
+#   # Once you have field-labelled positives at native 640x480:
+#   python tools/measure_thresholds.py --positives ./labelled_positives \
+#                                      --positives-source camera
 # ============================================================
 
 import argparse
 import sys
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ai.camera_sim import simulate_camera          # noqa: E402
 from ai.detector import ObjectDetector             # noqa: E402
 from ai.model_loader import ModelLoader            # noqa: E402
 from utils.config_loader import Config             # noqa: E402
@@ -90,13 +108,26 @@ IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
 VIDEO_SUFFIXES = {'.mp4', '.mov', '.avi', '.mkv'}
 
 
-def iter_frames(path: Path, step: int) -> Iterable[np.ndarray]:
-    """Yield frames from a file. Images: one frame. Videos: every `step`th."""
+Frame = np.ndarray
+Transform = Callable[[Frame], Frame]
+
+
+def iter_frames(path: Path, step: int,
+                transform: Optional[Transform] = None) -> Iterable[Frame]:
+    """Yield frames from a file. Images: one frame. Videos: every `step`th.
+
+    If `transform` is provided, it is applied to each frame BEFORE yielding.
+    That is the point at which camera simulation runs for stock positives —
+    at the frame boundary, so every downstream consumer (score_frame,
+    frame_scores, per-clip aggregation) sees pixels that match what the
+    device would have received. A raw-imread path here would silently
+    inflate recall on high-resolution stock images.
+    """
     suffix = path.suffix.lower()
     if suffix in IMAGE_SUFFIXES:
         img = cv2.imread(str(path))
         if img is not None:
-            yield img
+            yield transform(img) if transform is not None else img
         return
 
     if suffix not in VIDEO_SUFFIXES:
@@ -110,7 +141,7 @@ def iter_frames(path: Path, step: int) -> Iterable[np.ndarray]:
             if not ok:
                 break
             if i % step == 0:
-                yield frame
+                yield transform(frame) if transform is not None else frame
             i += 1
     finally:
         cap.release()
@@ -137,7 +168,8 @@ def score_frame(detector: ObjectDetector, frame: np.ndarray) -> float:
 
 
 def collect_scores(files: List[Path], detector: ObjectDetector,
-                   step: int, label: str) -> List[Tuple[Path, float]]:
+                   step: int, label: str,
+                   transform: Optional[Transform] = None) -> List[Tuple[Path, float]]:
     """Return (path, best_score_across_extracted_frames) per file.
 
     Per-file rather than per-frame because a clip is the atomic unit for the
@@ -146,7 +178,7 @@ def collect_scores(files: List[Path], detector: ObjectDetector,
     """
     results = []
     for i, path in enumerate(files, start=1):
-        scores = [score_frame(detector, f) for f in iter_frames(path, step)]
+        scores = [score_frame(detector, f) for f in iter_frames(path, step, transform)]
         if not scores:
             print(f"  [skip] {path.name}: no frames", file=sys.stderr)
             continue
@@ -159,16 +191,29 @@ def collect_scores(files: List[Path], detector: ObjectDetector,
 
 
 def frame_scores(files: List[Path], detector: ObjectDetector,
-                 step: int, label: str) -> List[float]:
+                 step: int, label: str,
+                 transform: Optional[Transform] = None) -> List[float]:
     """Per-FRAME scores across every file. Needed for deter-threshold policy,
     which fires on a single frame."""
     all_scores = []
     for i, path in enumerate(files, start=1):
-        for f in iter_frames(path, step):
+        for f in iter_frames(path, step, transform):
             all_scores.append(score_frame(detector, f))
         if i % 5 == 0 or i == len(files):
             print(f"  {label}: {i}/{len(files)}", file=sys.stderr)
     return all_scores
+
+
+def per_clip_scores(files: List[Path], detector: ObjectDetector,
+                    step: int,
+                    transform: Optional[Transform] = None) -> List[List[float]]:
+    """Per-clip lists of per-frame scores. Feeds voting analysis."""
+    out = []
+    for path in files:
+        scores = [score_frame(detector, f) for f in iter_frames(path, step, transform)]
+        if scores:
+            out.append(scores)
+    return out
 
 
 def voting_recall(per_clip_frame_scores: List[List[float]],
@@ -281,6 +326,65 @@ def check_disjoint(pos_files: List[Path], neg_files: List[Path],
         )
 
 
+def _pick_alert_threshold(pos_per_clip: List[List[float]],
+                          neg_per_clip: List[List[float]],
+                          k: int) -> Tuple[float, float, float]:
+    """Sweep candidate alert thresholds and return the (t, recall, precision)
+    that maximises recall subject to precision-proxy >= 0.99. Falls back to
+    the highest-precision candidate if nothing meets that bar."""
+    if not (pos_per_clip and neg_per_clip):
+        return 0.95, 0.0, 1.0
+    best = None
+    for t in np.arange(0.60, 0.981, 0.01):
+        t = float(round(t, 2))
+        prec = voting_precision_proxy(neg_per_clip, t, k)
+        rec  = voting_recall(pos_per_clip, t, k)
+        if prec >= 0.99 and (best is None or rec > best[1]):
+            best = (t, rec, prec)
+    if best is None:
+        for t in np.arange(0.60, 0.981, 0.01):
+            t = float(round(t, 2))
+            prec = voting_precision_proxy(neg_per_clip, t, k)
+            rec  = voting_recall(pos_per_clip, t, k)
+            if best is None or prec > best[2] or (prec == best[2] and rec > best[1]):
+                best = (t, rec, prec)
+    return best
+
+
+def _build_transform(source: str, sim_mode: str,
+                     target_wh: Tuple[int, int]) -> Optional[Transform]:
+    """Return the frame transform to apply to positives before scoring.
+
+    source='camera'  -> None (pass through; frames already came from a camera)
+    source='stock'   -> simulate_camera(..., mode=sim_mode)
+    """
+    if source == 'camera':
+        return None
+    return lambda img: simulate_camera(img, target_wh, mode=sim_mode)
+
+
+def _measure_positives(files: List[Path], detector: ObjectDetector,
+                       step: int, label: str,
+                       transform: Optional[Transform]
+                       ) -> Tuple[List[float], List[List[float]]]:
+    """Score positives once with a single transform. Returns (per_frame,
+    per_clip). Runs frame_scores and per_clip_scores in one pass to avoid
+    double inference — every frame is inferred once, not twice."""
+    all_scores: List[float] = []
+    per_clip: List[List[float]] = []
+    for i, path in enumerate(files, start=1):
+        clip: List[float] = []
+        for f in iter_frames(path, step, transform):
+            s = score_frame(detector, f)
+            clip.append(s)
+            all_scores.append(s)
+        if clip:
+            per_clip.append(clip)
+        if i % 5 == 0 or i == len(files):
+            print(f"  {label}: {i}/{len(files)}", file=sys.stderr)
+    return all_scores, per_clip
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -292,6 +396,22 @@ def main():
                     help=f"dir of images or MP4s containing NO herons "
                          f"(default: {DEFAULT_NEGATIVES}, walked recursively; "
                          f"every clip in there is a verified true negative)")
+    ap.add_argument('--positives-source', choices=('stock', 'camera'),
+                    default='stock',
+                    help="Provenance of the positives directory. 'stock' = "
+                         "high-resolution photos, apply camera simulation "
+                         "before scoring so measurement matches deployment. "
+                         "'camera' = frames already came from a webcam at "
+                         "system.resolution — pass through untouched. Getting "
+                         "this wrong once pond footage arrives would waste "
+                         "the data (double-processing camera-native frames).")
+    ap.add_argument('--sim-mode', choices=('crop', 'pad', 'both'),
+                    default='both',
+                    help="Camera-simulation policy applied to stock positives. "
+                         "'crop' (canonical): centre-crop to camera aspect, "
+                         "downsample. 'pad': fit-and-pad with grey. 'both': "
+                         "run positives twice and print a sensitivity table. "
+                         "Ignored when --positives-source=camera.")
     ap.add_argument('--step', type=int, default=DEFAULT_STEP,
                     help=f"take every Nth frame from each clip (default {DEFAULT_STEP})")
     ap.add_argument('--k', type=int, default=3,
@@ -321,6 +441,11 @@ def main():
     detector = ObjectDetector(loader, confidence_threshold=SCORE_FLOOR,
                               labels=labels or None)
 
+    target_wh = (config.get('system.resolution.width', 640),
+                 config.get('system.resolution.height', 480))
+    print(f"Camera target for simulation: {target_wh[0]}x{target_wh[1]}",
+          file=sys.stderr)
+
     # ---- Collect file lists and refuse overlap -----------------------------
     pos_files = collect_paths(args.positives)
     neg_files = collect_paths(args.negatives)
@@ -331,78 +456,82 @@ def main():
         return 2
 
     # ---- Negatives ---------------------------------------------------------
+    # No simulation on negatives: they are already camera-native and their
+    # distribution matches an independent 275-frame measurement to three
+    # decimal places. Do not touch this path.
     print(f"\n=== Negatives ({args.negatives}) ===", file=sys.stderr)
     print(f"  {len(neg_files)} file(s)", file=sys.stderr)
     neg_frame_scores = frame_scores(neg_files, detector, args.step, 'neg')
-
-    # Also per-clip max, for the voting analysis.
-    neg_per_clip = []
-    for path in neg_files:
-        scores = [score_frame(detector, f) for f in iter_frames(path, args.step)]
-        if scores:
-            neg_per_clip.append(scores)
+    neg_per_clip = per_clip_scores(neg_files, detector, args.step)
 
     # ---- Positives ---------------------------------------------------------
-    print(f"\n=== Positives ({args.positives}) ===", file=sys.stderr)
+    # Which simulation modes to run positives through. When source=camera,
+    # only the identity transform makes sense (frames already came from one).
+    if args.positives_source == 'camera':
+        modes = ['identity']
+        transforms = {'identity': None}
+    elif args.sim_mode == 'both':
+        modes = ['crop', 'pad']
+        transforms = {m: _build_transform('stock', m, target_wh) for m in modes}
+    else:
+        modes = [args.sim_mode]
+        transforms = {args.sim_mode: _build_transform('stock', args.sim_mode, target_wh)}
+
+    print(f"\n=== Positives ({args.positives}) "
+          f"source={args.positives_source} modes={modes} ===", file=sys.stderr)
     print(f"  {len(pos_files)} file(s)", file=sys.stderr)
-    pos_frame_scores = frame_scores(pos_files, detector, args.step, 'pos')
-    pos_per_clip = []
-    for path in pos_files:
-        scores = [score_frame(detector, f) for f in iter_frames(path, args.step)]
-        if scores:
-            pos_per_clip.append(scores)
+
+    pos_frame_by_mode: dict = {}
+    pos_per_clip_by_mode: dict = {}
+    for mode in modes:
+        print(f"  scoring positives under sim={mode}...", file=sys.stderr)
+        frames, per_clip = _measure_positives(
+            pos_files, detector, args.step, f'pos({mode})',
+            transforms[mode],
+        )
+        pos_frame_by_mode[mode] = frames
+        pos_per_clip_by_mode[mode] = per_clip
+
+    # Canonical mode: what the "Suggested config" line uses. Crop matches a
+    # real camera; identity is the only option for camera-source runs; pad is
+    # explicitly not policy.
+    if 'crop' in modes:
+        canonical = 'crop'
+    elif 'identity' in modes:
+        canonical = 'identity'
+    else:
+        canonical = modes[0]
 
     # ---- Report ------------------------------------------------------------
     print("\n" + "=" * 60)
-    print("Per-frame scores")
-    describe('positives', pos_frame_scores)
-    describe('negatives', neg_frame_scores)
+    print("Negatives (unchanged, no simulation applied)")
+    describe('per-frame', neg_frame_scores)
 
     print("\n" + "=" * 60)
-    print("Per-clip best score")
-    describe('positives (per-clip max)', [max(s) for s in pos_per_clip])
-    describe('negatives (per-clip max)', [max(s) for s in neg_per_clip])
+    print(f"Positives sensitivity (canonical={canonical})")
+    if len(modes) > 1:
+        _sensitivity_table(pos_frame_by_mode)
+    else:
+        describe(f'positives ({canonical}, per-frame)',
+                 pos_frame_by_mode[canonical])
 
-    # ---- Deter threshold: govern per-frame FPs ----------------------------
-    #
-    # The deter path fires on a single frame. Choose the smallest threshold
-    # such that no more than 1% of negative FRAMES clear it. Margin of 0.01
-    # avoids the exact p99 boundary.
+    # ---- Deter threshold: govern per-frame FPs (canonical positives) -----
+    canonical_pos_frames = pos_frame_by_mode[canonical]
+    canonical_pos_per_clip = pos_per_clip_by_mode[canonical]
+
     if neg_frame_scores:
         deter = min(1.0, round(percentile(neg_frame_scores, 99) + 0.01, 3))
-        deter_recall = sum(s >= deter for s in pos_frame_scores) / max(len(pos_frame_scores), 1)
+        deter_recall = (sum(s >= deter for s in canonical_pos_frames)
+                        / max(len(canonical_pos_frames), 1))
         deter_fpr = sum(s >= deter for s in neg_frame_scores) / len(neg_frame_scores)
     else:
         deter, deter_recall, deter_fpr = 0.90, 0.0, 0.0
 
-    # ---- Alert threshold: sweep and pick best under N-of-M ---------------
-    #
-    # For alert we sweep thresholds and pick the one that maximises positive
-    # recall subject to precision-proxy (fraction of neg clips voting NEG)
-    # being at least 0.99. If nothing meets 0.99, tighten to the best
-    # available.
-    if pos_per_clip and neg_per_clip:
-        best = None
-        for t in np.arange(0.60, 0.981, 0.01):
-            t = float(round(t, 2))
-            prec = voting_precision_proxy(neg_per_clip, t, args.k)
-            rec  = voting_recall(pos_per_clip, t, args.k)
-            if prec >= 0.99 and (best is None or rec > best[1]):
-                best = (t, rec, prec)
-        if best is None:
-            # Fall back: highest precision achievable.
-            for t in np.arange(0.60, 0.981, 0.01):
-                t = float(round(t, 2))
-                prec = voting_precision_proxy(neg_per_clip, t, args.k)
-                rec  = voting_recall(pos_per_clip, t, args.k)
-                if best is None or prec > best[2] or (prec == best[2] and rec > best[1]):
-                    best = (t, rec, prec)
-        alert_t, alert_recall, alert_prec = best
-    else:
-        alert_t, alert_recall, alert_prec = 0.95, 0.0, 1.0
+    alert_t, alert_recall, alert_prec = _pick_alert_threshold(
+        canonical_pos_per_clip, neg_per_clip, args.k)
 
     print("\n" + "=" * 60)
-    print("Suggested config (measured, not vibes)")
+    print(f"Suggested config (measured, canonical positives={canonical})")
     print(f"\n  ai.deter_threshold: {deter}")
     print(f"    per-frame:  recall={deter_recall:.2f}  fpr={deter_fpr:.3f}")
     print(f"    intent:     one confident frame fires the sound; false bang cheap, "
@@ -416,9 +545,6 @@ def main():
           f"call across frames.")
 
     # ---- What the CURRENT config would score ------------------------------
-    # Shipping this alongside the suggestion lets a reader compare instead of
-    # blindly copying. The suggested numbers are one policy (p99 + margin);
-    # they are not the only defensible choice, especially on small samples.
     current_deter = config.get('ai.deter_threshold',
                                config.get('ai.confidence_threshold', 0.90))
     current_alert = config.get('ai.alert_threshold',
@@ -428,20 +554,24 @@ def main():
         cur_deter_fpr = sum(s >= current_deter for s in neg_frame_scores) / len(neg_frame_scores)
     else:
         cur_deter_fpr = float('nan')
-    cur_deter_recall = (sum(s >= current_deter for s in pos_frame_scores)
-                        / max(len(pos_frame_scores), 1))
-    if pos_per_clip and neg_per_clip:
-        cur_alert_recall = voting_recall(pos_per_clip, current_alert, current_k)
-        cur_alert_prec   = voting_precision_proxy(neg_per_clip, current_alert, current_k)
-    else:
-        cur_alert_recall = cur_alert_prec = float('nan')
 
     print("\n" + "-" * 60)
     print("Current config for comparison")
-    print(f"  ai.deter_threshold={current_deter}: recall={cur_deter_recall:.2f}  "
-          f"fpr={cur_deter_fpr:.3f}")
-    print(f"  ai.alert_threshold={current_alert} @ {current_k}-of-{args.m}: "
-          f"recall={cur_alert_recall:.2f}  precision-proxy={cur_alert_prec:.2f}")
+    print(f"  ai.deter_threshold={current_deter}, fpr={cur_deter_fpr:.3f}")
+    # Show recall under every mode so the sensitivity is visible at the
+    # decision line, not buried in the sensitivity table.
+    for mode in modes:
+        frames = pos_frame_by_mode[mode]
+        rec = sum(s >= current_deter for s in frames) / max(len(frames), 1)
+        marker = ' (canonical)' if mode == canonical else ''
+        print(f"    recall under sim={mode}{marker}: {rec:.2f}")
+    print(f"  ai.alert_threshold={current_alert} @ {current_k}-of-{args.m}:")
+    for mode in modes:
+        per_clip = pos_per_clip_by_mode[mode]
+        rec = voting_recall(per_clip, current_alert, current_k)
+        prec = voting_precision_proxy(neg_per_clip, current_alert, current_k)
+        marker = ' (canonical)' if mode == canonical else ''
+        print(f"    sim={mode}{marker}: recall={rec:.2f}  precision-proxy={prec:.2f}")
 
     print(f"\nCopy into config.yaml -> ai:")
     print(f"  deter_threshold: {deter}")
@@ -451,9 +581,30 @@ def main():
 
     if args.positives == DEFAULT_POSITIVES:
         print("\nNOTE: --positives is the val split of the stock training dataset. "
-              "Same domain as training, so recall above flatters the model. "
-              "Point --positives at a curated field-labelled set once the "
-              "dashboard has produced one.")
+              "Same domain as training, so recall above flatters the model even "
+              "with camera simulation applied. Point --positives at a curated "
+              "field-labelled set once the dashboard has produced one; use "
+              "--positives-source camera when you do.")
+
+
+def _sensitivity_table(pos_frame_by_mode: dict) -> None:
+    """Side-by-side per-frame percentiles under each simulation mode."""
+    modes = list(pos_frame_by_mode.keys())
+    header = f"  {'stat':>10}  " + "  ".join(f"{m:>8}" for m in modes)
+    print(header)
+    for label, stat in (('n', len),
+                        ('median', lambda v: percentile(v, 50)),
+                        ('p90', lambda v: percentile(v, 90)),
+                        ('p95', lambda v: percentile(v, 95)),
+                        ('p99', lambda v: percentile(v, 99)),
+                        ('max', max),
+                        ('mean', lambda v: sum(v) / len(v))):
+        row = f"  {label:>10}  " + "  ".join(
+            f"{stat(pos_frame_by_mode[m]):>8.3f}"
+            if label != 'n' else f"{len(pos_frame_by_mode[m]):>8d}"
+            for m in modes
+        )
+        print(row)
 
 
 if __name__ == '__main__':
