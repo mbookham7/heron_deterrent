@@ -57,10 +57,15 @@
 # model's 640x640 input — the same size the letterbox produces from a 640x480
 # webcam frame, but from ~10x more source pixels and without the 4:3 crop
 # a real camera applies. Recall came out at 0.55 at deter=0.90; the honest
-# camera-simulated number is 0.42. See ai/camera_sim.py for the full story.
-# Positives are simulated by default; negatives are already camera-native
-# and are NEVER simulated. --positives-source=camera skips simulation, for
-# use with pond-labelled data as it arrives.
+# camera-simulated number is 0.41 (18/44). See tools/camera_sim.py for the
+# full story. Positives are simulated by default; negatives are already
+# camera-native and are NEVER simulated. --positives-source=camera skips
+# simulation, for use with pond-labelled data as it arrives.
+#
+# tools/camera_sim.py is the CANONICAL copy for both this repo and
+# heron-detector, which vendors a byte-identical mirror at src/camera_sim.py.
+# See SHARING.md for why. Do not put camera_sim under ai/ — the deployed
+# device has a camera, it does not simulate one.
 #
 # USAGE
 #
@@ -85,8 +90,11 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for sibling tools/camera_sim.py
 
-from ai.camera_sim import simulate_camera          # noqa: E402
+from camera_sim import (                            # noqa: E402
+    CameraGeometry, load_geometry_with_source, simulate_camera_frame,
+)
 from ai.detector import ObjectDetector             # noqa: E402
 from ai.model_loader import ModelLoader            # noqa: E402
 from utils.config_loader import Config             # noqa: E402
@@ -351,16 +359,23 @@ def _pick_alert_threshold(pos_per_clip: List[List[float]],
     return best
 
 
+# The CLI still speaks in 'crop'/'pad' because callers and docs are written
+# that way, but the underlying implementation uses the full names
+# 'center_crop'/'pad_to_aspect'. This dict is the one place they map.
+_SIM_MODE_TO_METHOD = {'crop': 'center_crop', 'pad': 'pad_to_aspect'}
+
+
 def _build_transform(source: str, sim_mode: str,
-                     target_wh: Tuple[int, int]) -> Optional[Transform]:
+                     geometry: CameraGeometry) -> Optional[Transform]:
     """Return the frame transform to apply to positives before scoring.
 
     source='camera'  -> None (pass through; frames already came from a camera)
-    source='stock'   -> simulate_camera(..., mode=sim_mode)
+    source='stock'   -> simulate_camera_frame(..., method=...)
     """
     if source == 'camera':
         return None
-    return lambda img: simulate_camera(img, target_wh, mode=sim_mode)
+    method = _SIM_MODE_TO_METHOD[sim_mode]
+    return lambda img: simulate_camera_frame(img, geometry, method=method)
 
 
 def _measure_positives(files: List[Path], detector: ObjectDetector,
@@ -441,10 +456,18 @@ def main():
     detector = ObjectDetector(loader, confidence_threshold=SCORE_FLOOR,
                               labels=labels or None)
 
-    target_wh = (config.get('system.resolution.width', 640),
-                 config.get('system.resolution.height', 480))
-    print(f"Camera target for simulation: {target_wh[0]}x{target_wh[1]}",
-          file=sys.stderr)
+    # Camera geometry: read from config.yaml (this repo owns it). The
+    # same-repo path is always present here, so falling back would only
+    # ever hide a config typo; we refuse instead.
+    loaded = load_geometry_with_source(Path('config.yaml'))
+    if loaded is None:
+        print("ERROR: could not read system.resolution from config.yaml. "
+              "This is the same repo the config lives in; fix the file "
+              "rather than defaulting.", file=sys.stderr)
+        return 2
+    geometry, geometry_source = loaded
+    print(f"Camera geometry: {geometry.width}x{geometry.height} "
+          f"(read from {geometry_source})", file=sys.stderr)
 
     # ---- Collect file lists and refuse overlap -----------------------------
     pos_files = collect_paths(args.positives)
@@ -472,10 +495,10 @@ def main():
         transforms = {'identity': None}
     elif args.sim_mode == 'both':
         modes = ['crop', 'pad']
-        transforms = {m: _build_transform('stock', m, target_wh) for m in modes}
+        transforms = {m: _build_transform('stock', m, geometry) for m in modes}
     else:
         modes = [args.sim_mode]
-        transforms = {args.sim_mode: _build_transform('stock', args.sim_mode, target_wh)}
+        transforms = {args.sim_mode: _build_transform('stock', args.sim_mode, geometry)}
 
     print(f"\n=== Positives ({args.positives}) "
           f"source={args.positives_source} modes={modes} ===", file=sys.stderr)
