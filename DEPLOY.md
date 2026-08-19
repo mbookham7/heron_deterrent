@@ -226,7 +226,7 @@ du -sh media/*
 | Deterrent firing at nothing | Check `media/heron/` first — at `deter_threshold=0.90` no bench frame clears the bar, so if it is firing something is genuinely triggering. If it truly is nothing, raise `deter_threshold` further. |
 | Lots of motion, no detections | Lower `motion.sensitivity` to `2000` |
 | Hundreds of "unknown" alerts | Raise `motion.sensitivity`; wind and shadow trigger it |
-| Herons ignored | Lower `deter_threshold` toward `0.75` (raises recall on stock positives 0.43 → 0.84, but lets 18% of bench frames through); move the camera closer |
+| Herons ignored | Lower `deter_threshold` toward `0.75` (raises recall on stock positives 0.41 → 0.84, but lets 18% of bench frames through); move the camera closer |
 | Card filling | Lower `storage.max_media_gb` |
 
 Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.

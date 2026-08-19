@@ -50,15 +50,15 @@ inference, 640×640 model:
 Reproduce every number here with `python tools/measure_thresholds.py`. That
 script simulates the camera before scoring positives (centre-crop to 4:3,
 downsample to 640×480) so the harness matches deployment; see
-`ai/camera_sim.py` for why not doing so overstates recall by roughly a third.
-Numbers below come from that script on the current media/ and
+`tools/camera_sim.py` for why not doing so overstates recall by roughly a
+third. Numbers below come from that script on the current media/ and
 heron-data/val/ snapshots.
 
 | Metric | Value |
 |---|---|
 | Positives median (per-frame) | 0.887 |
 | Recall @ threshold 0.75 | 0.84 |
-| Recall @ current `deter_threshold` = 0.90 | **0.43** |
+| Recall @ current `deter_threshold` = 0.90 | **0.41 (18/44)** |
 | Precision @ 0.75 (positives) | 1.00 |
 | Real camera frames with no heron scoring ≥ 0.75 | 18% (50 / 275) |
 | Real camera frames with no heron scoring ≥ 0.90 | **0% (0 / 275)** |
@@ -72,13 +72,13 @@ are 275 frames of real camera footage from `media/` — an indoor bench test,
 not the deployment scene.
 
 The single most important fact: **at the shipped `deter_threshold` of 0.90 no
-negative frame clears the bar, but recall on stock positives is 0.43.** The
-model catches fewer than half the herons that a stock camera would show it. The
-distributions overlap — positives median 0.887, negatives p99 0.863 — so no
-threshold separates them cleanly. The fix is negative training data, not a
-different threshold. The 0.90 setpoint chooses to miss half the herons rather
-than fire the deterrent at nothing, which is the right trade for a bang whose
-false alarm is nearly free.
+negative frame clears the bar, but recall on stock positives is 0.41 (18/44).**
+The model catches fewer than half the herons that a stock camera would show
+it. The distributions overlap — positives median 0.887, negatives p99 0.863 —
+so no threshold separates them cleanly. The fix is negative training data, not
+a different threshold. The 0.90 setpoint chooses to miss more than half the
+herons rather than fire the deterrent at nothing, which is the right trade
+for a bang whose false alarm is nearly free.
 
 ---
 
@@ -202,7 +202,7 @@ that the code agrees with itself.
 | `motion.sensitivity` | `5000` | Minimum contour area to trigger. Lower = more sensitive |
 | `motion.cooldown_seconds` | `10` | Minimum gap between detection events |
 | `ai.target` | `cpu` | `cpu` or `edgetpu` — the only hardware switch |
-| `ai.deter_threshold` | `0.90` | Deterrent fires above this. At 0.90: recall 0.43 on stock positives with camera simulation, zero false negatives frames. See "Accuracy" |
+| `ai.deter_threshold` | `0.90` | Deterrent fires above this. At 0.90: recall 0.41 (18/44) on stock positives with camera simulation, zero false-positive frames. See "Accuracy" |
 | `ai.alert_threshold` | `0.95` | Recording + SMS require this AND `k`-of-`m` voting |
 | `ai.alert_vote_k` / `alert_vote_m` | `3` / `5` | N-of-M voting on the alert path (see `ai/detector.py`) |
 | `ai.confidence_threshold` | `0.90` | Deprecated fallback for older configs; used when the split keys are absent |
@@ -523,7 +523,7 @@ Run `./preflight.py` first — it diagnoses most of this and prints the fix.
 1. Is the current time inside `active_hours`?
 2. Lower `motion.sensitivity` (try `2000`)
 3. Lower `ai.deter_threshold` toward `0.75` (accepting more false positives, since
-   at 0.75 recall on stock positives is 0.84 vs 0.43 at the shipped 0.90 — but 18%
+   at 0.75 recall on stock positives is 0.84 vs 0.41 at the shipped 0.90 — but 18%
    of your bench footage also clears that bar, so the deterrent will fire more)
 4. Upload a clip via the dashboard's Test Upload to confirm inference works
 5. `sudo journalctl -u heron-deterrent -f`
@@ -534,7 +534,7 @@ At the shipped `deter_threshold=0.90`, no frame of the current bench footage
 clears the bar — so if the deterrent is firing at nothing, the trigger frames
 are worse than what is already recorded, and you should look at
 `media/heron/` for evidence before changing thresholds. Lowering `deter_threshold`
-toward 0.75 raises recall on positives (0.43 → 0.84) but lets 18% of bench-style
+toward 0.75 raises recall on positives (0.41 → 0.84) but lets 18% of bench-style
 frames through. The two distributions overlap — positives median 0.887,
 negatives p99 0.863 — so no setting gives you both. **Collect negative training
 images from your own scene instead:** use collect mode (`collect_mode.enabled:
