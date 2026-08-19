@@ -181,7 +181,10 @@ Edit `config.yaml`. The critical Pi-specific settings are:
 ```yaml
 ai:
   target: cpu                                # The only hardware switch
-  confidence_threshold: 0.75                 # See README "Accuracy" before changing
+  deter_threshold: 0.90                      # Fires the sound. See README "Accuracy".
+  alert_threshold: 0.95                      # Recording + SMS require this AND voting
+  alert_vote_k: 3
+  alert_vote_m: 5
   num_threads: 4                             # Use all 4 cores
   labels:
     0: "heron"                               # Single-class model — exactly one entry

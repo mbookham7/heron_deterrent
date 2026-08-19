@@ -4,8 +4,8 @@ Ordered steps from a flashed OS to a running service, on either board.
 Tick straight down. Rollback is at the bottom.
 
 **Reference values for this build:** `ai.target: cpu`,
-`models/heron_cpu_int8.tflite`, threshold `0.75`, service `heron-deterrent`.
-Coral user is `mendel`, Pi user is `pi`.
+`models/heron_cpu_int8.tflite`, `deter_threshold: 0.90` / `alert_threshold: 0.95`,
+service `heron-deterrent`. Coral user is `mendel`, Pi user is `pi`.
 
 ---
 
@@ -148,7 +148,7 @@ Expect, within a couple of seconds:
 
 ```
 Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3
-Detector ready: input 640x640 float32 | classes=1 | confidence>=0.75
+Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9
 Loaded 1 deterrent sound(s): startle_default.wav
 Camera 0 open at 640x480
 System started successfully
@@ -223,10 +223,10 @@ du -sh media/*
 
 | Symptom | Fix |
 |---|---|
-| Deterrent firing at nothing | Raise `ai.confidence_threshold` toward `0.85` |
+| Deterrent firing at nothing | Check `media/heron/` first — at `deter_threshold=0.90` no bench frame clears the bar, so if it is firing something is genuinely triggering. If it truly is nothing, raise `deter_threshold` further. |
 | Lots of motion, no detections | Lower `motion.sensitivity` to `2000` |
 | Hundreds of "unknown" alerts | Raise `motion.sensitivity`; wind and shadow trigger it |
-| Herons ignored | Lower `confidence_threshold` to `0.65`; move the camera closer |
+| Herons ignored | Lower `deter_threshold` toward `0.75` (raises recall on stock positives 0.43 → 0.84, but lets 18% of bench frames through); move the camera closer |
 | Card filling | Lower `storage.max_media_gb` |
 
 Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
@@ -234,8 +234,10 @@ Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
 The most valuable thing you can collect is **negative examples** from your own
 pond — the model was trained on ~180 close-up herons with no negatives, which is
 why non-heron frames score as high as **0.89**: measured on real camera footage,
-18% of frames containing no heron at all still clear the 0.75 threshold. Label
-them in the dashboard's Unclassified panel.
+18% of frames containing no heron at all still clear a 0.75 threshold. `deter=0.90`
+holds them out today, but two false-positive tails a hair higher would put the
+sound firing at nothing. Label pond footage in the dashboard's Unclassified
+panel, or turn on `collect_mode` to have the device gather borderline clips.
 
 ---
 

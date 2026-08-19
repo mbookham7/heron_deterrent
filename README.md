@@ -45,34 +45,40 @@ inference, 640×640 model:
 | Saved clip size | 117 KB (5 s, 640×480) |
 | Resident memory | ~110 MB |
 
-### Accuracy — read the caveat, the old numbers here were wrong
+### Accuracy — read the caveat, and re-derive with the script
 
-This table previously claimed "96% recall over 80 dataset images" and non-heron
-frames "clear of ~0.70 spikes". Neither figure was reproducible: no script in
-this repo produced them, and the second is contradicted by the footage in
-`media/`. Re-measured against the corrected letterbox preprocessing (see
-`ai/letterbox.py`), using the CPU int8 model:
+Reproduce every number here with `python tools/measure_thresholds.py`. That
+script simulates the camera before scoring positives (centre-crop to 4:3,
+downsample to 640×480) so the harness matches deployment; see
+`ai/camera_sim.py` for why not doing so overstates recall by roughly a third.
+Numbers below come from that script on the current media/ and
+heron-data/val/ snapshots.
 
-| | before (stretch) | after (letterbox) |
-|---|---|---|
-| Recall @ 0.75, IoU 0.5 | 0.73 | **0.82** |
-| Precision @ 0.75 | 0.97 | **1.00** |
-| mAP50 | 0.925 | **0.953** |
-| Real camera frames with no heron scoring ≥ 0.75 | 11% | 18% |
-| Worst false score on those frames | 0.886 | 0.894 |
+| Metric | Value |
+|---|---|
+| Positives median (per-frame) | 0.887 |
+| Recall @ threshold 0.75 | 0.84 |
+| Recall @ current `deter_threshold` = 0.90 | **0.43** |
+| Precision @ 0.75 (positives) | 1.00 |
+| Real camera frames with no heron scoring ≥ 0.75 | 18% (50 / 275) |
+| Real camera frames with no heron scoring ≥ 0.90 | **0% (0 / 275)** |
+| Worst false score on those frames | 0.894 |
 
-Positives are the 44 validation images from `heron-data`, cropped and scaled to
-the camera's 640×480. **They are the same stock-photo domain as the training
-set, so they flatter the model and say nothing about performance at a pond.**
-Negatives are 275 frames of real camera footage from `media/` — which is an
-indoor bench test, not the deployment scene.
+Positives are the 44 validation images from `heron-data`, centre-cropped to
+4:3 and scaled to the camera's 640×480. **They are the same stock-photo
+domain as the training set, so they flatter the model and say nothing about
+performance at a pond** — even with the camera simulation applied. Negatives
+are 275 frames of real camera footage from `media/` — an indoor bench test,
+not the deployment scene.
 
-The important number is the last row: **fixing the preprocessing made the
-positives better on every measure and the false positives worse.** That is not
-a contradiction. The model has never seen a negative example, so it scores any
-dark object of roughly the right size like a heron; feeding it undistorted input
-raises its confidence on those objects too. No threshold separates the two
-distributions. The fix is negative training data, not a different threshold.
+The single most important fact: **at the shipped `deter_threshold` of 0.90 no
+negative frame clears the bar, but recall on stock positives is 0.43.** The
+model catches fewer than half the herons that a stock camera would show it. The
+distributions overlap — positives median 0.887, negatives p99 0.863 — so no
+threshold separates them cleanly. The fix is negative training data, not a
+different threshold. The 0.90 setpoint chooses to miss half the herons rather
+than fire the deterrent at nothing, which is the right trade for a bang whose
+false alarm is nearly free.
 
 ---
 
@@ -115,11 +121,22 @@ the inference *backend*, not the board:
 ```yaml
 ai:
   target: cpu                  # "cpu" or "edgetpu" — see Edge TPU status above
-  confidence_threshold: 0.75
+  deter_threshold: 0.90        # fires the deterrent (fast path, single frame)
+  alert_threshold: 0.95        # governs recording + SMS (voted across frames)
+  alert_vote_k: 3              # need k of the last m key frames above alert
+  alert_vote_m: 5
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:
     0: "heron"                 # single-class model; more entries fail at startup
 ```
+
+Two thresholds, because one number cannot do both jobs. A false BANG is nearly
+free — the sound is a bang, not a bill — and being late to a bird is expensive,
+so `deter_threshold` is optimistic and acts on a single frame. A false ALERT
+costs your attention and your trust in the dashboard, so `alert_threshold` is
+strict and confirmed across frames (`k` of the last `m` key frames must clear
+it). Re-derive both from footage with `tools/measure_thresholds.py`; see
+"Accuracy" for what those numbers mean today.
 
 | `ai.target` | Model file | Backend |
 |---|---|---|
@@ -185,7 +202,10 @@ that the code agrees with itself.
 | `motion.sensitivity` | `5000` | Minimum contour area to trigger. Lower = more sensitive |
 | `motion.cooldown_seconds` | `10` | Minimum gap between detection events |
 | `ai.target` | `cpu` | `cpu` or `edgetpu` — the only hardware switch |
-| `ai.confidence_threshold` | `0.75` | Recall 0.82 / precision 1.00 on positives; 18% of real no-heron frames also clear it. See "Accuracy" |
+| `ai.deter_threshold` | `0.90` | Deterrent fires above this. At 0.90: recall 0.43 on stock positives with camera simulation, zero false negatives frames. See "Accuracy" |
+| `ai.alert_threshold` | `0.95` | Recording + SMS require this AND `k`-of-`m` voting |
+| `ai.alert_vote_k` / `alert_vote_m` | `3` / `5` | N-of-M voting on the alert path (see `ai/detector.py`) |
+| `ai.confidence_threshold` | `0.90` | Deprecated fallback for older configs; used when the split keys are absent |
 | `ai.num_threads` | `4` | CPU threads; ignored on `edgetpu` |
 | `ai.labels` | `{0: heron}` | Must match the model's class count exactly |
 | `alert.sms_enabled` | `false` | Needs `/etc/heron-deterrent.env` (see below) |
@@ -255,7 +275,7 @@ board, from the repo root:
 ```
 
 ```
-[PASS] config       ai.target=cpu  confidence=0.75  classes=1
+[PASS] config       ai.target=cpu  confidence=0.9  classes=1
 [PASS] model        heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
 [skip] edgetpu      ai.target is not 'edgetpu'
 [PASS] sounds       1 file(s), 172 KB: startle_default.wav
@@ -502,16 +522,24 @@ Run `./preflight.py` first — it diagnoses most of this and prints the fix.
 
 1. Is the current time inside `active_hours`?
 2. Lower `motion.sensitivity` (try `2000`)
-3. Lower `ai.confidence_threshold` (try `0.6`, accepting more false positives)
+3. Lower `ai.deter_threshold` toward `0.75` (accepting more false positives, since
+   at 0.75 recall on stock positives is 0.84 vs 0.43 at the shipped 0.90 — but 18%
+   of your bench footage also clears that bar, so the deterrent will fire more)
 4. Upload a clip via the dashboard's Test Upload to confirm inference works
 5. `sudo journalctl -u heron-deterrent -f`
 
 ### False triggers
 
-Raising `ai.confidence_threshold` to `0.85` cuts the no-heron frames that clear
-it from 18% to about 2%, but **recall drops from 0.82 to 0.60** — one heron in
-five walks past unchallenged. There is no setting that gives you both; the score
-distributions overlap. Collect negative training images instead.
+At the shipped `deter_threshold=0.90`, no frame of the current bench footage
+clears the bar — so if the deterrent is firing at nothing, the trigger frames
+are worse than what is already recorded, and you should look at
+`media/heron/` for evidence before changing thresholds. Lowering `deter_threshold`
+toward 0.75 raises recall on positives (0.43 → 0.84) but lets 18% of bench-style
+frames through. The two distributions overlap — positives median 0.887,
+negatives p99 0.863 — so no setting gives you both. **Collect negative training
+images from your own scene instead:** use collect mode (`collect_mode.enabled:
+true`) to have the device manufacture borderline clips for you to label through
+the dashboard.
 
 ### Model will not load
 
