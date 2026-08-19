@@ -28,6 +28,17 @@ ssh mendel@<board-ip>          # Coral
 ssh pi@<board-ip>              # Pi
 ```
 
+**The board is on DHCP, so the address moves.** If it stops answering on the
+address you wrote down, find it again (`ping`, or check the router) before
+assuming a fault. When it does move, SSH refuses the new address with
+`Host key verification failed` — that is expected. Confirm it is the same board
+rather than blindly clearing the entry: the host key should be *identical* to
+the one already trusted for the old address.
+
+```bash
+ssh-keyscan -t ed25519 <new-ip>            # compare against ~/.ssh/known_hosts
+```
+
 **No answer on port 22?** If the board replies to `ping` but refuses port 22,
 `sshd` is probably disabled rather than the network being broken. You need local
 access once: connect the **micro-USB** port (the small one, not either USB-C) and
@@ -87,6 +98,11 @@ nano config.yaml
 - [ ] `storage.max_media_gb: 1.0` — lower it if the card is small.
       **On Coral, check `df -h /home`: it is a separate 2 GB partition**
 - [ ] `alert.sms_enabled: false` unless you have done step 5
+- [ ] `collect_mode.enabled` — `false` for a working deterrent. Set `true` only
+      for a data-collection run, and read the storage warning in step 10 first:
+      it records everything above `record_threshold` (0.30), which on a bench is
+      near-continuous. `collect_mode.deterrent_enabled: false` silences the
+      sound independently, so you can gather footage without the bang.
 
 ---
 
@@ -114,12 +130,26 @@ Never put credentials in `heron-deterrent.service` — that file is in git.
 
 ```bash
 cd ~/heron_deterrent
-./preflight.py
+venv/bin/python preflight.py          # NOT ./preflight.py — see below
 ```
+
+**Always run it through the venv.** `./preflight.py` uses the `#!/usr/bin/env
+python3` shebang, which on Mendel finds the *system* Python — and that has no
+PyYAML and no Flask. It fails at the first check with:
+
+```
+[FAIL] config       cannot load config.yaml: No module named 'yaml'
+       -> Run preflight from the repo root: cd ~/heron_deterrent && ./preflight.py
+```
+
+That hint is misleading: the repo root is not the problem, the interpreter is.
+`venv/bin/python preflight.py` (or `source venv/bin/activate` first) fixes it.
 
 **Listen for the speaker.** The audio check plays a real WAV; if you hear
 nothing, the deterrent will be silent no matter what the check says about the
-device being present.
+device being present. Running remotely, where nobody is in the room to hear it?
+Use `--skip-audio` and treat the speaker as unverified — the check can only
+prove the device exists, never that sound came out of it.
 
 Every failure prints the command that fixes it. Do not continue until you see:
 
@@ -141,25 +171,63 @@ Two things preflight cannot see when run by hand:
 ## 7. Run it by hand once
 
 ```bash
-START_WEB_UI=true python main.py
+START_WEB_UI=true venv/bin/python main.py
+```
+
+**Not `python main.py`.** On Mendel `/usr/bin/python` is Python **2.7.16**, so
+that command dies immediately on the first type annotation:
+
+```
+def __init__(self, config_path: str = "config.yaml"):
+                              ^
+SyntaxError: invalid syntax
 ```
 
 Expect, within a couple of seconds:
 
 ```
-Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3
-Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9
+Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3 float32 | output=1x5x8400
+Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9 | iou=0.45
+Thresholds: deter=0.9  alert=0.95  vote=3/5  anchor_floor=0.9
 Loaded 1 deterrent sound(s): startle_default.wav
 Camera 0 open at 640x480
 System started successfully
 ```
 
+With `collect_mode.enabled: true` the last two of those change, and one more
+line appears — this is correct, not a fault:
+
+```
+Detector ready: ... | confidence>=0.3 | iou=0.45          <- anchor floor drops to record_threshold
+Thresholds: deter=0.9  alert=0.95  vote=3/5  anchor_floor=0.3
+COLLECT MODE ON: recording everything above 0.3, deterrent DISABLED
+```
+
 - [ ] Open `http://<board-ip>:5000` — dashboard loads, live feed moves
 - [ ] Walk in front of the camera → journal shows
       `Motion detected - inferring on trigger frame`
-- [ ] Press **Trigger Deterrent** on the dashboard → you hear the sound
-- [ ] Optional, strongest test: upload a heron clip via **Test Upload** →
-      expect `herons_detected: 1` or more, and the speaker fires
+- [ ] Press **Trigger Deterrent** on the dashboard → you hear the sound.
+      **Silent on a collect run:** with `collect_mode.deterrent_enabled: false`
+      this logs `Deterrent SILENCED` and plays nothing. That is the flag
+      working, not a broken speaker.
+- [ ] Optional, strongest test: upload a heron clip via **Test Upload**
+
+**Two traps in the Test Upload check.** It is a weaker test than it looks:
+
+1. **It only accepts video** — `.mp4/.mov/.avi/.mkv`. A heron *photo* is
+   rejected with `Unsupported file type`. Wrap stills into a short clip first.
+2. **`herons_detected` is not scoped to your upload.** The endpoint returns the
+   heron rows among the last 10 detections in the database, so it can report
+   `herons_detected: 1` from an *earlier* detection while the clip you just
+   uploaded was actually filed as `unknown`. Confirm against the database
+   before believing it:
+   `sqlite3 data/heron.db "select id,timestamp,label,confidence from detections order by id desc limit 5"`
+
+Also note Test Upload runs the **alert** path (`alert_threshold`, k-of-m
+voting), never the deter path — its docstring says so explicitly. It therefore
+cannot validate `deter_threshold`. Since only 1 of the 44 stock positives
+clears 0.95, a genuine heron clip will usually come back `unknown` here even
+though the model is working perfectly.
 
 `Ctrl-C` when satisfied.
 
@@ -197,9 +265,14 @@ systemctl is-active heron-deterrent          # expect: active
 
 # Restart on reboot
 sudo reboot
-# wait ~90s, then from your laptop:
+# wait, then from your laptop:
 ssh <user>@<board-ip> 'systemctl is-active heron-deterrent'
 ```
+
+The Coral is back on the network in about **25 seconds**, not 90 — quick enough
+that an immediate reconnect can succeed *before* the board has actually gone
+down, making a failed reboot look like a passed one. Confirm with `uptime -s`
+that the boot time is what you expect before trusting the result.
 
 - [ ] Survives `kill -9` (systemd waits 10 s, then restarts)
 - [ ] Survives a reboot
@@ -230,6 +303,55 @@ du -sh media/*
 | Card filling | Lower `storage.max_media_gb` |
 
 Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
+
+### Collect mode fills the card, and the safety net eats your data
+
+`storage.max_media_gb` deletes **oldest first**. On a collect run the oldest
+clips are exactly the footage you went out to gather, so the mechanism that
+protects the card is also the one that quietly discards your dataset. It runs
+every 5 minutes (`CLEANUP_INTERVAL_SECONDS`) and logs `Size cap: deleted N
+oldest file(s)` when it bites — that line is the only warning you get.
+
+Measured on the Coral bench (640x480, 5 fps, 5 s clips, `record_threshold` 0.30):
+
+| | clips/hour | growth | time to the 1.0 GB cap |
+|---|---|---|---|
+| Observed, ordinary room activity | ~80 | ~12 MB/h | **~3.8 days** |
+| Saturated, continuous motion (10 s cooldown) | ~225 | ~33 MB/h | **~32 hours** |
+
+Mean clip is ~147 KB. **Offload before that window closes.** From your laptop:
+
+```bash
+mkdir -p ~/heron_board_pull
+rsync -a --stats \
+  -e "ssh -i ~/.ssh/heron_coral -o IdentitiesOnly=yes" \
+  mendel@<board-ip>:/home/mendel/heron_deterrent/media/ \
+  ~/heron_board_pull/
+```
+
+To pull *and* free the card in one step, so the cap can never reach your
+footage, add `--remove-source-files` (then prune the emptied directories):
+
+```bash
+rsync -a --stats --remove-source-files \
+  -e "ssh -i ~/.ssh/heron_coral -o IdentitiesOnly=yes" \
+  mendel@<board-ip>:/home/mendel/heron_deterrent/media/ \
+  ~/heron_board_pull/
+ssh mendel@<board-ip> 'find ~/heron_deterrent/media -type d -empty -delete'
+```
+
+Two warnings:
+
+- **Never pull into this repo's `media/`.** That directory is the curated
+  reference set behind every threshold in both repos, and
+  `tools/measure_thresholds.py` reads it as verified negatives. Mixing board
+  clips into it silently corrupts the ground truth. Use a separate directory.
+- macOS ships **openrsync**, not GNU rsync. `--remove-source-files`,
+  `--stats` and `--prune-empty-dirs` all work; `--info=stats2` does not.
+
+`media/labeled/` is exempt from both the age sweep and the size cap by design
+(`CURATED_MEDIA_SUBDIRS`), so hand-labelled training data is never deleted —
+it only ever triggers the `max_labeled_gb` warning.
 
 The most valuable thing you can collect is **negative examples** from your own
 pond — the model was trained on ~180 close-up herons with no negatives, which is
@@ -296,7 +418,7 @@ Something is wrong and you want the shortest path to a diagnosis:
 
 ```bash
 cd ~/heron_deterrent
-./preflight.py                                   # names the fault and the fix
+venv/bin/python preflight.py                     # names the fault and the fix
 systemctl status heron-deterrent                 # running? restart looping?
 sudo journalctl -u heron-deterrent -n 50         # last 50 lines
 df -h /home                                      # full card?
