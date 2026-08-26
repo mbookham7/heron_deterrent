@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 import logging
 
+from storage.video_encoder import encode_h264
+
 logger = logging.getLogger(__name__)
 
 # Ephemeral clip storage: subject to age retention and the hard size cap.
@@ -57,29 +59,28 @@ class MediaStore:
             subdir = "other"
         
         filepath = self.base_path / subdir / filename
-        
+
         try:
             if len(frames) == 0:
                 logger.warning("No frames to save")
                 return str(filepath)
-            
-            # Get frame dimensions
-            height, width = frames[0].shape[:2]
-            
-            # Define codec and create VideoWriter
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(str(filepath), fourcc, self.fps, (width, height))
-            
-            for frame in frames:
-                out.write(frame)
-            
-            out.release()
+
+            # H.264 via ffmpeg, NOT cv2.VideoWriter(*'mp4v'). The old writer
+            # produced MPEG-4 Part 2, which no browser can decode: the gallery
+            # drew working playback controls over a permanently black frame and
+            # reported no error. See storage/video_encoder.py for why cv2 cannot
+            # do H.264 on this hardware and what it costs to do it properly.
+            encode_h264(frames, str(filepath), self.fps)
             logger.info(f"Saved video: {filepath}")
-            
+
             return str(filepath)
-            
+
         except Exception as e:
-            logger.error(f"Failed to save video: {e}")
+            # Loud, and with no unplayable file left behind — encode_h264
+            # removes its own partial output. Returning "" keeps a single failed
+            # clip from killing the detection thread, but the error is never
+            # swallowed into a silently-broken file.
+            logger.error(f"Failed to save video {filepath}: {e}")
             return ""
     
     def save_labeled_image(self, image: np.ndarray, label: str,

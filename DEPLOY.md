@@ -154,7 +154,7 @@ prove the device exists, never that sound came out of it.
 Every failure prints the command that fixes it. Do not continue until you see:
 
 ```
-All 7 checks passed.
+All 8 checks passed.
 ```
 
 Two things preflight cannot see when run by hand:

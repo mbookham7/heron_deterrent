@@ -15,6 +15,7 @@ import sys
 from utils.config_loader import Config
 from storage.database import Database
 from storage.media_store import MediaStore
+from storage.video_encoder import require_encoder
 from capture.camera import Camera
 from capture.motion_detector import MotionDetector
 from ai.model_loader import ModelLoader
@@ -64,6 +65,17 @@ class HeronDeterrentSystem:
 
         # Media storage — clips are written at the capture rate so they play
         # back at real speed rather than double time.
+        #
+        # Check the video encoder BEFORE anything else touches the disk. Clips
+        # were previously written as MPEG-4 Part 2, which every browser parses
+        # and no browser can decode — the dashboard showed playback controls
+        # over a black frame and reported nothing wrong. Refusing to start is
+        # deliberate: a recorder that silently produces unplayable footage is
+        # worse than one that does not run, because the loss is only discovered
+        # when you go looking for the footage.
+        encoder = require_encoder()
+        logger.info(f"Video encoder: {encoder}")
+
         media_path = self.config.get('storage.media_path', './media/')
         self.media_store = MediaStore(media_path, fps=self.config.get('system.frame_rate', 5))
 

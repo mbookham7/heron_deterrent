@@ -284,7 +284,7 @@ board, from the repo root:
 [PASS] disk         1.5 GB free of 1.9 GB on /home (23% used)
 [PASS] database     data/heron.db writable (24 KB)
 [skip] sms          alert.sms_enabled is false
-All 7 checks passed.
+All 8 checks passed.
 ```
 
 Every failure prints the command that fixes it. Exit status is 0 only when

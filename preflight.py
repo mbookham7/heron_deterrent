@@ -239,6 +239,26 @@ def check_camera(config):
         cap.release()
 
 
+def check_video_encoder():
+    """Can this board write clips a browser can actually play?
+
+    Worth a dedicated check because the old failure was completely silent:
+    cv2.VideoWriter(*'mp4v') reported success and produced a well-formed .mp4
+    that no browser can decode. Nothing downstream noticed — the dashboard drew
+    playback controls over a black frame. Only opening a clip in a browser, or
+    checking the codec here, reveals it.
+    """
+    from storage.video_encoder import encoder_status
+
+    ok, detail = encoder_status()
+    if ok:
+        return check('video', True, f"H.264 available — {detail}")
+    return check('video', False, detail,
+                 "Clips would be unplayable in the dashboard gallery.",
+                 "On Mendel/Debian:  sudo apt-get install -y ffmpeg",
+                 "Verify afterwards: ffmpeg -hide_banner -encoders | grep libx264")
+
+
 def check_disk(config):
     media = Path(config.get('storage.media_path', './media/'))
     probe = media if media.exists() else Path('.')
@@ -342,6 +362,7 @@ def main():
     wavs = check_sounds(config)
     check_audio(wavs, args.skip_audio)
     check_camera(config)
+    check_video_encoder()
     check_disk(config)
     check_database(config)
     check_twilio(config)
