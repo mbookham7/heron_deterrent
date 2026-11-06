@@ -161,13 +161,67 @@
         /* ── Stats strip ── */
         .stats-strip {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 12px;
         }
 
         @media (max-width: 700px) {
             .stats-strip { grid-template-columns: repeat(2, 1fr); }
         }
+
+        /* ── Frame type (image domain) ──
+           Day and night are different image domains with separate training
+           sets. These badges exist so an IR clip is never labelled into the
+           daylight set by mistake — they are not decoration. */
+        .ft-badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .ft-day          { background: rgba(210,153,34,0.18); color: var(--yellow); }
+        .ft-ir           { background: rgba(163,113,247,0.18); color: var(--purple); }
+        .ft-dark         { background: rgba(88,166,255,0.18); color: var(--blue); }
+        .ft-unsettled    { background: transparent; color: var(--text-dim); border: 1px dashed var(--border-hi); }
+
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .filter-btn {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border-hi);
+            background: transparent;
+            color: var(--text-dim);
+            cursor: pointer;
+        }
+        .filter-btn.active { border-color: var(--blue); color: var(--blue); }
+
+        .domain-banner {
+            margin-top: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            border: 1px solid var(--border-hi);
+        }
+        .domain-banner.day     { border-color: var(--yellow); background: rgba(210,153,34,0.10); }
+        .domain-banner.ir      { border-color: var(--purple); background: rgba(163,113,247,0.10); }
+        .domain-banner.dark    { border-color: var(--blue);   background: rgba(88,166,255,0.10); }
+        .domain-banner.blocked { border-color: var(--red);    background: rgba(248,81,73,0.10); }
+        .domain-banner .why    { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+        .domain-choice { margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
 
         .stat-card {
             background: var(--surface);
@@ -307,6 +361,7 @@
         .feed-icon.critical { background: rgba(248,81,73,0.15); }
         .feed-icon.warning  { background: rgba(210,153,34,0.15); }
         .feed-icon.info     { background: rgba(88,166,255,0.15); }
+        .feed-icon.motion   { background: rgba(163,113,247,0.12); }
 
         .feed-content { flex: 1; min-width: 0; }
         .feed-msg { color: var(--text); word-break: break-word; }
@@ -659,9 +714,9 @@
                 <span class="status-dot" id="dot-camera"></span>
                 <span id="lbl-camera">Camera</span>
             </div>
-            <div class="status-pill" id="pill-active">
-                <span class="status-dot" id="dot-active"></span>
-                <span id="lbl-active">Active hours</span>
+            <div class="status-pill" id="pill-mode" title="">
+                <span class="status-dot" id="dot-mode"></span>
+                <span id="lbl-mode">Mode</span>
             </div>
         </div>
     </header>
@@ -677,20 +732,39 @@
                     <div class="stat-sub">detections</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Total Detections</div>
+                    <div class="stat-label">Model Detections</div>
                     <div class="stat-value blue" id="stat-total">—</div>
-                    <div class="stat-sub">all time</div>
+                    <div class="stat-sub">all time · model ran</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Last Detection</div>
+                    <div class="stat-label">Last Heron</div>
                     <div class="stat-value green" id="stat-last" style="font-size:16px; padding-top:4px;">—</div>
-                    <div class="stat-sub" id="stat-last-label">no detections yet</div>
+                    <div class="stat-sub" id="stat-last-label">no herons yet</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">Alerts Sent</div>
                     <div class="stat-value" id="stat-alerts">—</div>
-                    <div class="stat-sub">total alerts</div>
+                    <div class="stat-sub">model alerts only</div>
                 </div>
+                <div class="stat-card" title="Motion triggers no model looked at: night (IR/dark) and dawn/dusk transitions. Not detections — nothing was identified.">
+                    <div class="stat-label">Motion · Unclassified</div>
+                    <div class="stat-value" id="stat-motion" style="color:var(--purple)">—</div>
+                    <div class="stat-sub" id="stat-motion-sub">no model ran</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Frame-type filter: applies to the detection lists, the triage
+             queue and the gallery. -->
+        <div class="full-width">
+            <div class="filter-bar" id="ft-filter">
+                <span>Show frame type:</span>
+                <button class="filter-btn active" data-ft="">All</button>
+                <button class="filter-btn" data-ft="day">Day</button>
+                <button class="filter-btn" data-ft="ir">IR</button>
+                <button class="filter-btn" data-ft="dark">Dark</button>
+                <button class="filter-btn" data-ft="unknown"
+                        title="Recorded while the frame type was establishing or switching, or before frame types were recorded">Unsettled</button>
             </div>
         </div>
 
@@ -710,7 +784,8 @@
                     </div>
                 </div>
                 <div class="btn-row">
-                    <button class="btn btn-danger" onclick="triggerDeterrent()">🔊 Trigger Deterrent</button>
+                    <button class="btn btn-danger" onclick="triggerDeterrent()"
+                            title="Plays a deterrent sound now. Manual test only — the automatic deterrent follows modes.<mode>.deterrent">🔊 Test Speaker</button>
                 </div>
             </div>
         </div>
@@ -740,7 +815,7 @@
         <!-- Unclassified -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">❓ Unclassified Objects</span>
+                <span class="card-title">❓ To Triage — Unknown &amp; Motion</span>
                 <span class="badge" id="badge-unclass">0</span>
             </div>
             <div class="det-list" id="unclass-list">
@@ -832,6 +907,10 @@
                 <button class="btn btn-primary" onclick="saveLabel()">Save</button>
             </div>
 
+            <!-- Which training set this frame goes into. Refreshed on every
+                 frame step, because a clip can straddle a mode switch. -->
+            <div class="domain-banner" id="domain-banner">Checking frame type…</div>
+
             <div class="box-list" id="box-list"></div>
             <div class="label-err" id="label-err"></div>
 
@@ -882,6 +961,10 @@
     // ── Polling ──────────────────────────────────────────────────────
     let previousAlertCount = 0;
     let previousHeronCount = 0;
+    // Declared before the first updateAll() below: the list fetches read it
+    // synchronously, and a `let` used before its line runs throws.
+    const SETTLED = ['day', 'ir', 'dark'];
+    let ftFilter = '';   // '' = all; 'unknown' = no settled frame type
 
     setInterval(updateAll, 5000);
     updateAll();
@@ -910,8 +993,17 @@
             setDot('dot-camera', d.camera_connected ? 'online' : 'offline');
             document.getElementById('lbl-camera').textContent = d.camera_connected ? 'Camera OK' : 'No Camera';
 
-            setDot('dot-active', d.active_hours ? 'online' : 'warning');
-            document.getElementById('lbl-active').textContent = d.active_hours ? 'Active' : 'Inactive hours';
+            // Mode pill: what the camera is producing and what that means.
+            const modeNames = { day: 'Day', ir: 'IR night', dark: 'Dark night',
+                                establishing: 'Establishing…', switching: 'Switching…' };
+            const st = d.frame_state;
+            setDot('dot-mode', st === 'day' ? 'online' : 'warning');
+            document.getElementById('lbl-mode').textContent =
+                `${modeNames[st] || st || 'Mode ?'} · ${d.motion_only ? 'motion-only' : 'model'}`
+                + ` · ${d.deterrent_armed ? 'deterrent ARMED' : 'silent'}`;
+            const m = d.frame_metrics;
+            document.getElementById('pill-mode').title = (d.mode || 'unsettled — recording, not classifying')
+                + (m ? `\nchroma ${m.chroma}  luma ${m.luma}  (this frame: ${m.raw_frame_type})` : '');
 
             document.getElementById('badge-live').textContent = online ? 'LIVE' : 'OFFLINE';
         } catch {}
@@ -923,37 +1015,46 @@
     }
 
     // ── Stats ────────────────────────────────────────────────────────
+    // Counted server-side. Motion-only rows are reported in their own card and
+    // never as detections or alerts — no model looked at them, so counting
+    // them alongside model output would imply something was identified.
     async function updateStats() {
         try {
-            const [allR, heronR, alertsR] = await Promise.all([
-                fetch('/api/detections?limit=500'),
-                fetch('/api/heron-detections?limit=500'),
-                fetch('/api/alerts?limit=500')
-            ]);
-            const all    = await allR.json();
-            const herons = await heronR.json();
-            const alerts = await alertsR.json();
-
-            document.getElementById('stat-total').textContent  = all.length;
-            document.getElementById('stat-alerts').textContent = alerts.length;
-
-            // Herons detected today
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const todayHerons = herons.filter(h => {
-                const d = new Date(h.timestamp);
-                return d >= today;
-            });
-            document.getElementById('stat-today').textContent = todayHerons.length;
-
-            // Last detection
-            if (herons.length > 0) {
-                const last = herons[0];
-                document.getElementById('stat-last').textContent = timeAgo(last.timestamp);
-                document.getElementById('stat-last-label').textContent = fmtTime(last.timestamp);
+            const s = await (await fetch('/api/stats')).json();
+            document.getElementById('stat-today').textContent  = s.herons_today;
+            document.getElementById('stat-total').textContent  = s.detections_total;
+            document.getElementById('stat-alerts').textContent = s.alerts_total;
+            document.getElementById('stat-motion').textContent = s.motion_today;
+            document.getElementById('stat-motion-sub').textContent =
+                `today · ${s.motion_total} all time · no model ran`;
+            if (s.last_heron) {
+                document.getElementById('stat-last').textContent = timeAgo(s.last_heron);
+                document.getElementById('stat-last-label').textContent = fmtTime(s.last_heron);
             }
         } catch {}
     }
+
+    // ── Frame type ───────────────────────────────────────────────────
+    function ftBadge(ft) {
+        if (SETTLED.includes(ft)) return `<span class="ft-badge ft-${ft}">${ft}</span>`;
+        return `<span class="ft-badge ft-unsettled" title="no settled frame type">${escHtml(ft || 'legacy')}</span>`;
+    }
+
+    function ftMatches(d) {
+        if (!ftFilter) return true;
+        if (ftFilter === 'unknown') return !SETTLED.includes(d.frame_type);
+        return d.frame_type === ftFilter;
+    }
+
+    document.querySelectorAll('#ft-filter .filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            ftFilter = btn.dataset.ft;
+            document.querySelectorAll('#ft-filter .filter-btn')
+                .forEach(b => b.classList.toggle('active', b === btn));
+            previousHeronCount = 0;   // a filter change is not a new heron
+            updateAll();
+        });
+    });
 
     // ── Alerts ──────────────────────────────────────────────────────
     async function updateAlerts() {
@@ -964,7 +1065,11 @@
             document.getElementById('badge-alerts').textContent = alerts.length;
 
             if (alerts.length > previousAlertCount && previousAlertCount > 0) {
-                toast('New alert received', 'error');
+                if ((alerts[0].type || '') === 'MOTION') {
+                    toast('Motion recorded — unclassified, no model ran', 'info');
+                } else {
+                    toast('New alert received', 'error');
+                }
             }
             previousAlertCount = alerts.length;
 
@@ -976,7 +1081,8 @@
 
             feed.innerHTML = alerts.map(a => {
                 const type = (a.type || '').toLowerCase();
-                const icon = type === 'critical' ? '🚨' : type === 'warning' ? '⚠️' : 'ℹ️';
+                const icon = type === 'critical' ? '🚨' : type === 'warning' ? '⚠️'
+                           : type === 'motion' ? '🌙' : 'ℹ️';
                 return `
                     <div class="feed-item">
                         <div class="feed-icon ${type}">${icon}</div>
@@ -992,7 +1098,8 @@
     // ── Heron detections ─────────────────────────────────────────────
     async function updateHeronDetections() {
         try {
-            const r = await fetch('/api/heron-detections?limit=30');
+            const r = await fetch('/api/heron-detections?limit=30'
+                                  + (ftFilter ? `&frame_type=${ftFilter}` : ''));
             const dets = await r.json();
 
             document.getElementById('badge-herons').textContent = dets.length;
@@ -1013,7 +1120,7 @@
                 const barClass = d.confidence >= 0.8 ? 'high' : d.confidence < 0.65 ? 'low' : '';
                 return `
                     <div class="det-item">
-                        <div class="det-label">Heron</div>
+                        <div class="det-label">Heron${ftBadge(d.frame_type)}</div>
                         <div class="conf-bar-wrap">
                             <div class="conf-bar-bg">
                                 <div class="conf-bar ${barClass}" style="width:${pct}%"></div>
@@ -1030,20 +1137,21 @@
     async function updateUnclassified() {
         try {
             const r = await fetch('/api/unclassified');
-            const dets = await r.json();
+            const dets = (await r.json()).filter(ftMatches);
 
             document.getElementById('badge-unclass').textContent = dets.length;
 
             const list = document.getElementById('unclass-list');
             if (!dets.length) {
-                list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing unclassified</div>';
+                list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>';
                 return;
             }
 
             list.innerHTML = dets.map(d => `
                 <div class="det-item">
-                    <div class="det-label" style="color:var(--text-dim)">ID ${d.id}</div>
-                    <div class="conf-bar-wrap" style="font-size:12px; color:var(--text-dim);">unknown object</div>
+                    <div class="det-label" style="color:var(--text-dim)">ID ${d.id}${ftBadge(d.frame_type)}</div>
+                    <div class="conf-bar-wrap" style="font-size:12px; color:var(--text-dim);">${
+                        d.label === 'motion' ? 'motion — unclassified, no model ran' : 'unknown object'}</div>
                     <div class="det-time">${timeAgo(d.timestamp)}</div>
                     <button class="label-btn" onclick="openLabelModal(${d.id})">Label</button>
                 </div>`
@@ -1054,7 +1162,8 @@
     // ── Gallery ──────────────────────────────────────────────────────
     async function updateGallery() {
         try {
-            const r = await fetch('/api/heron-detections?limit=20');
+            const r = await fetch('/api/heron-detections?limit=20'
+                                  + (ftFilter ? `&frame_type=${ftFilter}` : ''));
             const dets = await r.json();
 
             document.getElementById('badge-gallery').textContent = dets.length;
@@ -1077,7 +1186,7 @@
                     <div class="gallery-item">
                         ${mediaTag}
                         <div class="gallery-meta">
-                            <div class="gallery-conf">${pct}% confident</div>
+                            <div class="gallery-conf">${pct}% confident${ftBadge(d.frame_type)}</div>
                             <div class="gallery-time">${timeAgo(d.timestamp)}</div>
                             <button class="label-btn" style="margin-top:6px; margin-left:0;"
                                     onclick="openLabelModal(${d.id})">Label</button>
@@ -1093,7 +1202,7 @@
             const r = await fetch('/api/trigger-deterrent', { method: 'POST' });
             const d = await r.json();
             if (d.success) {
-                toast('Deterrent triggered!', 'success');
+                toast('Speaker test played', 'success');
             } else {
                 toast('Error: ' + d.error, 'error');
             }
@@ -1120,13 +1229,67 @@
         nativeH: 0,
         boxes: [],           // {x, y, w, h} in NATIVE pixel coords
         drawing: null,       // {startX, startY, curX, curY} in canvas coords
+        domain: null,        // training set this frame would go to; null = cannot save
+        confirmedDomain: null, // operator's choice, for clips with no settled type
     };
+
+    // Ask the server which training set THIS frame would be filed under. It
+    // decides from the frame's type recorded live at capture, never from the
+    // decoded frame (the encoder's colour cast makes IR look like day).
+    async function refreshDomain() {
+        const banner = document.getElementById('domain-banner');
+        const q = labelState.confirmedDomain ? `?requested=${labelState.confirmedDomain}` : '';
+        let d;
+        try {
+            const r = await fetch(`/api/detection/${labelState.detectionId}/frame/${labelState.frameIndex}/domain${q}`);
+            d = await r.json();
+        } catch (e) {
+            labelState.domain = null;
+            banner.className = 'domain-banner blocked';
+            banner.textContent = 'Cannot determine frame type — not saving.';
+            return;
+        }
+        labelState.domain = d.domain;
+        const names = { day: 'DAYLIGHT', ir: 'IR (night)', dark: 'DARK (night)' };
+        const why = `<div class="why">${escHtml(d.reason || '')}</div>`;
+
+        if (d.domain) {
+            banner.className = `domain-banner ${d.domain}`;
+            banner.innerHTML = `Saves to the <strong>${names[d.domain]}</strong> training set `
+                + `<code>labeled/${d.domain}/</code>${why}`;
+            return;
+        }
+        banner.className = 'domain-banner blocked';
+        if (!d.needs_confirmation) {
+            banner.innerHTML = `<strong>Cannot be filed.</strong>${why}`;
+            return;
+        }
+        // No settled frame type, or no capture-time record: a human decides.
+        const advisory = d.advisory
+            ? `<div class="why">Recorded at capture: <strong>${escHtml(d.recorded_frame_type || 'no record')}</strong>`
+              + ` · decoded frame reads as ${escHtml(d.advisory.decoded_reads_as)}`
+              + ` (advisory only — video compression tints IR frames)</div>` : '';
+        const choice = ['day', 'ir', 'dark'].map(ft =>
+            `<label><input type="radio" name="domain-choice" value="${ft}"
+                ${labelState.confirmedDomain === ft ? 'checked' : ''}
+                onchange="confirmDomain('${ft}')"> ${names[ft]}</label>`).join('');
+        banner.innerHTML = `<strong>Choose the training set for this frame.</strong>${why}${advisory}`
+            + `<div class="domain-choice">${choice}</div>`;
+    }
+
+    function confirmDomain(ft) {
+        labelState.confirmedDomain = ft;
+        clearLabelError();
+        refreshDomain();
+    }
 
     async function openLabelModal(detectionId) {
         labelState.detectionId = detectionId;
         labelState.frameIndex = 0;
         labelState.boxes = [];
         labelState.drawing = null;
+        labelState.domain = null;
+        labelState.confirmedDomain = null;
         clearLabelError();
 
         try {
@@ -1166,6 +1329,7 @@
         resizeCanvas();
         redrawBoxes();
         updateFrameCounter();
+        await refreshDomain();
     }
 
     function stepFrame(delta) {
@@ -1343,6 +1507,11 @@
                 + "no heron.");
             return;
         }
+        if (!labelState.domain) {
+            showLabelError("This frame has no training set yet — see the box above. "
+                + "Nothing is saved until it does; day and night data must never mix.");
+            return;
+        }
         // Non-heron labels: strip boxes; the server would drop them anyway but
         // being explicit here keeps the wire small.
         const bboxes = (label === 'heron')
@@ -1358,12 +1527,14 @@
                     label,
                     frame_index: labelState.frameIndex,
                     bboxes,
+                    domain: labelState.confirmedDomain,
                 })
             });
             const d = await r.json();
             if (d.success) {
                 toast(`Labelled detection ${labelState.detectionId} as "${label}"`
-                      + (bboxes.length ? ` (${bboxes.length} box)` : ''), 'success');
+                      + (bboxes.length ? ` (${bboxes.length} box)` : '')
+                      + (d.domain ? ` → ${d.domain} set` : ''), 'success');
                 closeLabelModal();
                 updateAll();
             } else {
