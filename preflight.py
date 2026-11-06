@@ -7,7 +7,8 @@ FAIL; every failure prints the command that fixes it.
     ./preflight.py               # all checks, plays a deterrent sound
     ./preflight.py --skip-audio  # same, but stay quiet
 
-Exit status is 0 only if every check passed.
+Exit status is 0 only if every check passed. [WARN] lines do not fail the
+run, but each one names something worth fixing before the box is sealed.
 """
 
 import argparse
@@ -27,6 +28,7 @@ MIN_FREE_FRACTION = 0.10
 _COLOUR = sys.stdout.isatty() and os.getenv('NO_COLOR') is None
 GREEN = '\033[32m' if _COLOUR else ''
 RED = '\033[31m' if _COLOUR else ''
+YELLOW = '\033[33m' if _COLOUR else ''
 DIM = '\033[2m' if _COLOUR else ''
 BOLD = '\033[1m' if _COLOUR else ''
 OFF = '\033[0m' if _COLOUR else ''
@@ -44,6 +46,35 @@ def check(name, ok, detail, *hints):
                 print(f"       {DIM}->{OFF} {line}")
     results.append((name, ok))
     return ok
+
+
+def warn(name, detail, *hints):
+    """Record and print a warning: worth acting on, not a reason to refuse to
+    start. Hints are always printed."""
+    print(f"{YELLOW}[WARN]{OFF} {name:<12} {detail}")
+    for hint in hints:
+        for line in str(hint).splitlines():
+            print(f"       {DIM}->{OFF} {line}")
+    warnings.append(name)
+    return True
+
+
+warnings = []
+
+# Pi 4 firmware starts soft-throttling at 80 C and hard-throttles at 85 C.
+# 70 C leaves headroom for a sealed box warming up through a summer afternoon.
+CPU_TEMP_WARN_C = 70.0
+CPU_TEMP_FAIL_C = 80.0
+
+# vcgencmd get_throttled bit meanings (Raspberry Pi firmware).
+THROTTLE_NOW = {0x1: 'under-voltage', 0x2: 'ARM frequency capped',
+                0x4: 'throttled', 0x8: 'soft temperature limit'}
+THROTTLE_SINCE_BOOT = {0x10000: 'under-voltage', 0x20000: 'ARM frequency capped',
+                       0x40000: 'throttled', 0x80000: 'soft temperature limit'}
+
+# Frames grabbed to judge the frame type. The first few after opening a USB
+# camera are often mid auto-exposure, so take a handful and use the majority.
+FRAME_TYPE_SAMPLE = 15
 
 
 # --------------------------------------------------------------------------
@@ -68,30 +99,67 @@ def check_config():
         return None
 
     labels = config.get('ai.labels', {})
-    check('config', True,
-          f"ai.target={target}  confidence={config.get('ai.confidence_threshold')}  "
-          f"classes={len(labels)}")
+    check('config', True, f"ai.target={target}  classes={len(labels)}")
     return config
 
 
-def check_model(config):
-    from ai.model_loader import TARGETS, ModelLoadError, ModelLoader
-    target = config.get('ai.target')
-    filename, needs_tpu, source = TARGETS[target]
-
+def check_modes(config):
+    """Per-frame-type modes: coherent, and every named model file present."""
+    from utils.modes import (ModeConfigError, load_frame_type_config, load_modes,
+                             missing_model_files)
     try:
-        loader = ModelLoader(target, config.get('ai.num_threads', 4))
-    except ModelLoadError as e:
-        check('model', False, f"{filename} will not load on target '{target}'", e)
-        return None
-    except Exception as e:
-        check('model', False, f"unexpected error loading {filename}: {e}")
+        modes = load_modes(config)
+        load_frame_type_config(config)
+    except ModeConfigError as e:
+        lines = str(e).splitlines()
+        check('modes', False, lines[0], *lines[1:])
         return None
 
-    shape = 'x'.join(str(int(v)) for v in loader.input_details[0]['shape'])
-    backend = 'Edge TPU' if needs_tpu else f"CPU/{config.get('ai.num_threads', 4)} threads"
-    check('model', True, f"{filename} loaded on {backend}, input {shape}")
-    return loader
+    for mode in modes.values():
+        print(f"       {DIM}{mode.describe()}{OFF}")
+
+    missing = missing_model_files(modes, config.get('ai.target'))
+    if missing:
+        check('modes', False, "a mode names a model file that does not exist", *missing,
+              "Copy the model into models/, or set that mode's model: null "
+              "(motion-only) in config.yaml")
+        return None
+
+    armed = [m.name for m in modes.values() if m.deterrent]
+    check('modes', True, f"{len(modes)} modes coherent; deterrent "
+          + (f"ARMED in {', '.join(armed)}" if armed else "silent in every mode"))
+    shadows = [m.name for m in modes.values() if m.shadow_model]
+    if shadows:
+        warn('modes', f"shadow inference on in {', '.join(shadows)}: one extra "
+             f"inference per trigger (logged, never acted on)")
+    return modes
+
+
+def check_model(config, modes):
+    """Load every model a mode names, once each. Motion-only modes need none."""
+    from ai.model_loader import MODELS, ModelLoadError, ModelLoader
+    target = config.get('ai.target')
+    names = sorted({n for m in (modes or {}).values()
+                    for n in (m.model, m.shadow_model) if n})
+    if not names:
+        print(f"{DIM}[skip] model        every mode is motion-only{OFF}")
+        return True
+
+    loaded = True
+    for name in names:
+        filename, needs_tpu, _source = MODELS[name][target]
+        try:
+            loader = ModelLoader(target, config.get('ai.num_threads', 4), model=name)
+        except ModelLoadError as e:
+            loaded = check('model', False, f"{filename} will not load on target '{target}'", e)
+            continue
+        except Exception as e:
+            loaded = check('model', False, f"unexpected error loading {filename}: {e}")
+            continue
+        shape = 'x'.join(str(int(v)) for v in loader.input_details[0]['shape'])
+        backend = 'Edge TPU' if needs_tpu else f"CPU/{config.get('ai.num_threads', 4)} threads"
+        check('model', True, f"{name}: {filename} loaded on {backend}, input {shape}")
+    return loaded
 
 
 def check_edge_tpu(config, model_loaded):
@@ -214,7 +282,7 @@ def check_camera(config):
                 print(f"       {DIM}->{OFF} That is expected. To test the device itself:")
                 print(f"       {DIM}->{OFF}   sudo systemctl stop heron-deterrent "
                       f"&& ./preflight.py")
-                print(f"       {DIM}->{OFF} Or check the live feed: "
+                print(f"       {DIM}->{OFF} Or check the live feed and frame type: "
                       f"curl -s localhost:5000/api/system-status")
                 return True
 
@@ -234,9 +302,58 @@ def check_camera(config):
         want = (config.get('system.resolution.width', 640),
                 config.get('system.resolution.height', 480))
         note = "" if (w, h) == want else f"  (config asks for {want[0]}x{want[1]})"
-        return check('camera', True, f"device {device_id} returned a {w}x{h} frame{note}")
+        check('camera', True, f"device {device_id} returned a {w}x{h} frame{note}")
+
+        frames = [frame]
+        for _ in range(FRAME_TYPE_SAMPLE - 1):
+            ok, f = cap.read()
+            if ok and f is not None:
+                frames.append(f)
+        return check_frame_type(config, frames)
     finally:
         cap.release()
+
+
+def check_frame_type(config, frames):
+    """Report what kind of image the camera is producing right now, with the
+    raw numbers behind it — those are what you tune frame_type: against.
+
+    Run it once in daylight and once after dark: the two readings should land
+    clearly either side of the thresholds. If a night reading sits in the dead
+    band, the camera is probably tinting its IR frames rather than sending
+    true monochrome; raise mono_max_chroma above the tint.
+    """
+    import statistics
+    from capture.frame_classifier import AMBIGUOUS, classify_measured, measure
+    from utils.modes import ModeConfigError, load_frame_type_config, load_modes
+    try:
+        cfg = load_frame_type_config(config)
+        modes = load_modes(config)
+    except ModeConfigError:
+        print(f"{DIM}[skip] frame type   frame_type:/modes: invalid (see above){OFF}")
+        return True
+
+    readings = [measure(f, cfg.sample_step) for f in frames]
+    types = [classify_measured(c, l, cfg) or AMBIGUOUS for c, l in readings]
+    majority = max(set(types), key=types.count)
+    chroma = statistics.median(c for c, _ in readings)
+    luma = statistics.median(l for _, l in readings)
+    tally = ', '.join(f"{t} {types.count(t)}" for t in sorted(set(types)))
+    detail = (f"{majority} ({tally} of {len(types)} frames)  "
+              f"chroma {chroma:.2f}  luma {luma:.1f}")
+    thresholds = (f"Thresholds: IR below chroma {cfg.mono_max_chroma}, dead band to "
+                  f"{cfg.ambiguous_chroma}; dark below luma {cfg.dark_max_luma}")
+
+    if majority == AMBIGUOUS or types.count(majority) < len(types) * 0.8:
+        return warn('frame type', detail,
+                    "Frames are ambiguous or disagree: the system would stay in "
+                    "establishing/switching, recording but never classifying.",
+                    thresholds,
+                    "If this is an IR scene, the camera may tint IR frames: raise "
+                    "frame_type.mono_max_chroma above the chroma shown.")
+    mode = modes.get(majority)
+    return check('frame type', True,
+                 detail + (f"  -> {mode.describe()}" if mode else ""))
 
 
 def check_video_encoder():
@@ -282,6 +399,109 @@ def check_disk(config):
                      f"Then reduce storage.retention_days (currently "
                      f"{config.get('storage.retention_days')}) and restart.")
     return check('disk', True, detail)
+
+
+def check_storage_caps(config):
+    """The two clip caps must fit on the filesystem with room to spare.
+
+    They are sized for the Pi's card. Left at those values on a Coral, whose
+    /home is a 2 GB partition, the caps would never trigger and the card would
+    fill — the cap that cannot be reached protects nothing.
+    """
+    media = Path(config.get('storage.media_path', './media/'))
+    probe = media if media.exists() else Path('.')
+    stat = os.statvfs(probe)
+    total_gb = (stat.f_blocks * stat.f_frsize) / (1024 ** 3)
+    media_gb = config.get('storage.max_media_gb', 1.0)
+    motion_gb = config.get('storage.max_motion_gb', 1.0)
+    caps = media_gb + motion_gb
+    detail = (f"clip caps {media_gb:g} GB classified + {motion_gb:g} GB motion = "
+              f"{caps:g} GB on a {total_gb:.1f} GB filesystem")
+    if caps > 0.8 * total_gb:
+        return check('storage', False, detail,
+                     "The caps can never be reached before the disk fills.",
+                     "Lower storage.max_media_gb and storage.max_motion_gb so together "
+                     f"they stay under {0.6 * total_gb:.1f} GB (60% of this filesystem).")
+    return check('storage', True, detail)
+
+
+def check_labeled(config):
+    """Per-domain labelled data, and anything stranded in the old flat layout."""
+    media = Path(config.get('storage.media_path', './media/'))
+    counts = []
+    for ft in ('day', 'ir', 'dark'):
+        d = media / 'labeled' / ft / 'images'
+        counts.append(f"{ft} {len(list(d.glob('*.jpg'))) if d.exists() else 0}")
+    legacy = [f for sub in ('images', 'labels')
+              for f in ((media / 'labeled' / sub).glob('*'))
+              if f.is_file()] if (media / 'labeled').exists() else []
+    if legacy:
+        return warn('labeled', f"images by domain: {', '.join(counts)}; "
+                    f"{len(legacy)} file(s) in the pre-split labeled/images|labels",
+                    "Those have no recorded domain. Sort them by eye into "
+                    "labeled/day|ir|dark/{images,labels} — keep each .jpg with its .txt.",
+                    "Nothing deletes them meanwhile, but no training run should read them.")
+    return check('labeled', True, f"images by domain: {', '.join(counts)}")
+
+
+def cpu_temp_verdict(temp_c, throttle_bits):
+    """('pass'|'warn'|'fail', active conditions, conditions since boot).
+    throttle_bits is vcgencmd get_throttled's value, or None if unavailable."""
+    bits = throttle_bits or 0
+    now = [name for bit, name in THROTTLE_NOW.items() if bits & bit]
+    past = [name for bit, name in THROTTLE_SINCE_BOOT.items() if bits & bit]
+    if temp_c >= CPU_TEMP_FAIL_C or now:
+        return 'fail', now, past
+    if temp_c >= CPU_TEMP_WARN_C or past:
+        return 'warn', now, past
+    return 'pass', now, past
+
+
+def check_cpu_temp():
+    """CPU temperature and throttling history.
+
+    The Pi lives in a sealed IP box in a filter house. A board quietly
+    throttling looks exactly like "inference got slower for no reason", so
+    report it here rather than leave it to be inferred from timings.
+    """
+    zone = Path('/sys/class/thermal/thermal_zone0/temp')
+    if not zone.exists():
+        print(f"{DIM}[skip] cpu temp     no /sys thermal zone (not a Pi/Linux board){OFF}")
+        return True
+    try:
+        temp_c = int(zone.read_text().strip()) / 1000.0
+    except (OSError, ValueError) as e:
+        return warn('cpu temp', f"cannot read {zone}: {e}")
+
+    bits = None
+    vcgencmd = shutil.which('vcgencmd')
+    if vcgencmd:
+        try:
+            out = subprocess.run([vcgencmd, 'get_throttled'], capture_output=True,
+                                 text=True, timeout=5).stdout.strip()
+            bits = int(out.split('=')[1], 16)   # "throttled=0x50000"
+        except (OSError, subprocess.TimeoutExpired, IndexError, ValueError):
+            pass
+    level, now, past = cpu_temp_verdict(temp_c, bits)
+
+    detail = f"{temp_c:.1f} C" + ("" if vcgencmd else "  (no vcgencmd: throttle state unknown)")
+    cooling = ("Improve cooling: heatsink or fan on the SoC, a vented or shaded "
+               "enclosure, and keep the box out of direct sun.")
+    if level == 'fail':
+        return check('cpu temp', False,
+                     detail + (f"  NOW: {', '.join(now)}" if now else ""),
+                     f"At {CPU_TEMP_FAIL_C:.0f} C the Pi 4 throttles; inference "
+                     f"slows with no error anywhere.",
+                     "Under-voltage means the PSU or cable is too weak: use the "
+                     "official 5.1 V / 3 A supply." if 'under-voltage' in now else cooling)
+    if level == 'warn':
+        return warn('cpu temp',
+                    detail + (f"  since boot: {', '.join(past)}" if past else ""),
+                    cooling if temp_c >= CPU_TEMP_WARN_C or 'soft temperature limit' in past
+                    or 'throttled' in past else
+                    "Under-voltage since boot: check the PSU and cable.",
+                    "Watch it live:  watch -n 5 'vcgencmd measure_temp; vcgencmd get_throttled'")
+    return check('cpu temp', True, detail + ("  never throttled since boot" if vcgencmd else ""))
 
 
 def _mount_point(path):
@@ -357,14 +577,18 @@ def main():
         print(f"\n{RED}Cannot continue without a valid config.{OFF}\n")
         return 1
 
-    loader = check_model(config)
-    check_edge_tpu(config, model_loaded=loader is not None)
+    modes = check_modes(config)
+    loaded = check_model(config, modes)
+    check_edge_tpu(config, model_loaded=bool(loaded))
     wavs = check_sounds(config)
     check_audio(wavs, args.skip_audio)
     check_camera(config)
     check_video_encoder()
     check_disk(config)
+    check_storage_caps(config)
+    check_labeled(config)
     check_database(config)
+    check_cpu_temp()
     check_twilio(config)
 
     passed = sum(1 for _, ok in results if ok)
@@ -377,7 +601,8 @@ def main():
         print(f"{RED}Do not start the service until the failures above are fixed.{OFF}\n")
         return 1
 
-    print(f"{GREEN}{BOLD}All {passed} checks passed.{OFF}")
+    print(f"{GREEN}{BOLD}All {passed} checks passed.{OFF}"
+          + (f" {YELLOW}{len(warnings)} warning(s): {', '.join(warnings)}{OFF}" if warnings else ""))
     if _service_is_running():
         print(f"{DIM}Already running.  Watch it:  "
               f"sudo journalctl -u heron-deterrent -f{OFF}\n")
