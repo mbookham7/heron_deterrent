@@ -133,7 +133,7 @@ def test_saved_clip_uses_a_browser_playable_codec():
 
     with tempfile.TemporaryDirectory() as tmp:
         store = MediaStore(tmp, fps=5.0)
-        path = store.save_video_clip(_frames(10), 'heron')
+        path = store.save_video_clip(_frames(10), 'heron', frame_type='day')
 
         assert path, "save_video_clip returned empty — encode failed"
         clip = Path(path)
@@ -157,7 +157,7 @@ def test_encoded_clip_honours_the_requested_fps():
 
     with tempfile.TemporaryDirectory() as tmp:
         store = MediaStore(tmp, fps=5.0)
-        path = store.save_video_clip(_frames(25), 'unknown')
+        path = store.save_video_clip(_frames(25), 'unknown', frame_type='day')
 
         rate = subprocess.run(
             ['ffprobe', '-v', 'error', '-select_streams', 'v:0',

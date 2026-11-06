@@ -164,6 +164,123 @@ def test_total_bytes_still_counts_labeled():
         assert store.labeled_bytes() == 100_050
 
 
+# --------------------------------------------------------------------------
+# Day/night split. labeled/ grew per-domain subtrees and the clip store grew a
+# motion/ pool. A previous change re-included labeled/ in the sweep while
+# claiming to fix it, so every new directory is checked against BOTH deletion
+# paths, by name, here.
+# --------------------------------------------------------------------------
+
+DOMAIN_SUBDIRS = [f'labeled/{ft}/{kind}' for ft in ('day', 'ir', 'dark')
+                  for kind in ('images', 'labels')]
+
+
+def test_every_domain_subdir_is_curated_not_ephemeral():
+    for sub in DOMAIN_SUBDIRS:
+        assert sub in CURATED_MEDIA_SUBDIRS, f"{sub} must be curated"
+        assert sub not in EPHEMERAL_MEDIA_SUBDIRS, f"{sub} must NOT be ephemeral"
+    assert 'motion' in EPHEMERAL_MEDIA_SUBDIRS, "night clips must be bounded"
+
+
+def test_no_deletion_path_reaches_any_domain_subdir():
+    """Ancient, oversized files in every per-domain tree — plus one in a
+    subdirectory nobody has named yet — survive retention and both caps."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        kept = []
+        for sub in DOMAIN_SUBDIRS + ['labeled/ir/some_future_subdir']:
+            f = store.base_path / sub / 'old.bin'
+            _touch(f, size_bytes=200_000, age_days=9999)
+            kept.append(f)
+        for pool_dir in ('heron', 'motion'):
+            _touch(store.base_path / pool_dir / 'old.mp4', size_bytes=1000, age_days=9999)
+
+        store.cleanup_old_media(days=1)
+        store.enforce_size_cap(max_gb=1e-9, pool='classified')
+        store.enforce_size_cap(max_gb=1e-9, pool='motion')
+
+        for f in kept:
+            assert f.exists(), f"{f} was deleted"
+        assert not (store.base_path / 'heron' / 'old.mp4').exists()
+        assert not (store.base_path / 'motion' / 'old.mp4').exists()
+
+
+def test_labeled_bytes_counts_every_domain_and_unnamed_subdirs():
+    """The size warning must see the whole tree. A non-recursive listing would
+    silently skip labeled/ir/images and report 0 bytes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        for sub in DOMAIN_SUBDIRS + ['labeled/ir/some_future_subdir']:
+            _touch(store.base_path / sub / 'f.bin', size_bytes=1000)
+        assert store.labeled_bytes() == 1000 * (len(DOMAIN_SUBDIRS) + 1)
+
+
+def test_motion_pool_cannot_evict_classified_clips():
+    """A noisy night fills motion/ far past its cap. Daylight clips — even
+    older ones — must be untouched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        day = store.base_path / 'unknown' / 'old_day.mp4'
+        _touch(day, size_bytes=200_000, age_days=30)
+        moths = [store.base_path / 'motion' / f'moth_{i}.mp4' for i in range(50)]
+        for i, m in enumerate(moths):
+            _touch(m, size_bytes=200_000, age_days=1 - i / 100)
+
+        removed = store.enforce_size_cap(max_gb=1_000_001 / (1024 ** 3), pool='motion')
+
+        assert day.exists(), "motion pool cap evicted a daylight clip"
+        assert removed == 45
+        assert all(m.exists() for m in moths[-5:]), "newest motion clips should remain"
+
+
+def test_classified_pool_cap_ignores_motion_clips():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        night = store.base_path / 'motion' / 'night.mp4'
+        _touch(night, size_bytes=5_000_000, age_days=30)
+        _touch(store.base_path / 'heron' / 'day.mp4', size_bytes=1000)
+
+        removed = store.enforce_size_cap(max_gb=1e-3, pool='classified')
+
+        assert removed == 0, "motion bytes must not count against the classified cap"
+        assert night.exists()
+
+
+def test_labelled_image_lands_in_its_domain_tree():
+    frame = np.zeros((48, 64, 3), np.uint8)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        for ft in ('day', 'ir', 'dark'):
+            img, lab = store.save_labeled_image(frame, 'cat', [], detection_id=7, frame_type=ft)
+            assert Path(img).parent == store.base_path / 'labeled' / ft / 'images'
+            assert Path(lab).parent == store.base_path / 'labeled' / ft / 'labels'
+
+
+def test_labelled_image_refuses_unsettled_or_missing_frame_type():
+    """An establishing/switching clip has no domain. Filing it anywhere would
+    be a guess, and a wrong guess silently contaminates a training set."""
+    frame = np.zeros((48, 64, 3), np.uint8)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        for bad in ('establishing', 'switching', None, 'night', ''):
+            try:
+                store.save_labeled_image(frame, 'heron', [(1, 1, 5, 5)], 1, frame_type=bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted frame_type={bad!r}")
+        assert not list((store.base_path / 'labeled').rglob('*.jpg'))
+
+
+def test_nothing_writes_to_the_legacy_flat_layout():
+    frame = np.zeros((48, 64, 3), np.uint8)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MediaStore(tmp)
+        store.save_labeled_image(frame, 'cat', [], detection_id=1, frame_type='day')
+        assert store.legacy_labeled_files() == []
+        _labeled_pair(store, 'old', image_bytes=10)
+        assert len(store.legacy_labeled_files()) == 2
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0

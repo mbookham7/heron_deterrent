@@ -81,7 +81,7 @@ def test_yolo_annotation_line_is_correct_end_to_end():
         store = MediaStore(tmp)
         frame = np.zeros((native_h, native_w, 3), dtype=np.uint8)
         image_path, label_path = store.save_labeled_image(
-            frame, 'heron', [px], detection_id=1
+            frame, 'heron', [px], detection_id=1, frame_type='day'
         )
         line = Path(label_path).read_text().strip()
 
@@ -101,7 +101,7 @@ def test_heron_with_empty_bboxes_writes_empty_file():
     with tempfile.TemporaryDirectory() as tmp:
         store = MediaStore(tmp)
         frame = np.zeros((400, 800, 3), dtype=np.uint8)
-        _, label_path = store.save_labeled_image(frame, 'heron', [], detection_id=1)
+        _, label_path = store.save_labeled_image(frame, 'heron', [], detection_id=1, frame_type='day')
         contents = Path(label_path).read_text()
         # A .txt with content would be worse than nothing here — but the store
         # is not the layer that should be rejecting the request. It writes an
@@ -120,7 +120,7 @@ def test_non_heron_labels_write_empty_file_even_with_boxes():
         # save_labeled_image already enforces this via the label check; pass a
         # box anyway to catch a regression that removes the check.
         _, label_path = store.save_labeled_image(
-            frame, 'cat', [(100, 50, 200, 100)], detection_id=1
+            frame, 'cat', [(100, 50, 200, 100)], detection_id=1, frame_type='day'
         )
         assert Path(label_path).read_text() == '', (
             "cat label produced a non-empty .txt — someone extended the "

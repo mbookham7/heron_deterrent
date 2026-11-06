@@ -119,7 +119,7 @@ def test_save_detection_persists_bbox():
         bbox = (0.1, 0.2, 0.3, 0.4)
         det_id = db.save_detection(
             label='heron', confidence=0.91, video_path='/tmp/x.mp4',
-            metadata={'type': 'CRITICAL'}, bbox=bbox,
+            metadata={'type': 'CRITICAL'}, bbox=bbox, frame_type='day',
         )
         row = db.conn.execute(
             "SELECT bbox FROM detections WHERE id = ?", (det_id,)
@@ -138,12 +138,70 @@ def test_save_detection_without_bbox_stores_null():
         db = Database(str(Path(tmp) / 'heron.db'))
         det_id = db.save_detection(
             label='unknown', confidence=0.5, video_path='',
-            metadata={'type': 'WARNING'},
+            metadata={'type': 'WARNING'}, frame_type='day',
         )
         row = db.conn.execute(
             "SELECT bbox FROM detections WHERE id = ?", (det_id,)
         ).fetchone()
         assert row[0] is None, f"expected NULL, got {row[0]!r}"
+        db.close()
+
+
+# --------------------------------------------------------------------------
+# frame_type column. Same migration pattern as bbox; existing rows stay NULL
+# rather than being backfilled as 'day' — the old 06:00 start was dark half
+# the year, so 'day' would be a guess.
+# --------------------------------------------------------------------------
+
+def test_migration_adds_frame_type_to_bbox_era_db():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / 'heron.db'
+        conn = sqlite3.connect(db_path)
+        conn.executescript(LEGACY_SCHEMA_SQL)
+        conn.execute('ALTER TABLE detections ADD COLUMN bbox TEXT')
+        conn.execute("INSERT INTO detections (label, confidence) VALUES ('heron', 0.9)")
+        conn.commit()
+        conn.close()
+
+        db = Database(str(db_path))
+        assert 'frame_type' in _cols(db.conn, 'detections')
+        row = db.conn.execute("SELECT label, frame_type FROM detections").fetchone()
+        assert row[0] == 'heron' and row[1] is None, f"legacy row changed: {tuple(row)}"
+        db.close()
+        Database(str(db_path)).close()  # idempotent
+
+
+def test_save_detection_requires_frame_type():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(str(Path(tmp) / 'heron.db'))
+        try:
+            db.save_detection(label='heron', confidence=0.9, video_path='', metadata={})
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("save_detection accepted a row with no frame_type")
+        db.close()
+
+
+def test_frame_type_filter_and_motion_stats():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(str(Path(tmp) / 'heron.db'))
+        db.save_detection('heron', 0.97, '', {}, frame_type='day')
+        db.save_detection('motion', None, '', {}, frame_type='ir')
+        db.save_detection('motion', None, '', {}, frame_type='switching')
+        db.conn.execute("INSERT INTO detections (label, confidence) VALUES ('unknown', 0.1)")
+        db.conn.commit()
+
+        assert [d['label'] for d in db.get_detections(frame_type='ir')] == ['motion']
+        assert {d['frame_type'] for d in db.get_detections(frame_type='unknown')} == {None, 'switching'}
+
+        stats = db.get_stats()
+        assert stats['detections_total'] == 2, "motion rows must not count as detections"
+        assert stats['motion_total'] == 2
+        assert stats['herons_today'] == 1
+
+        queue = {d['label'] for d in db.get_unclassified_detections()}
+        assert 'motion' in queue, "night motion clips must reach the triage queue"
         db.close()
 
 
