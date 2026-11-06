@@ -25,7 +25,19 @@ TARGETS = {
     'edgetpu': ('heron_edgetpu.tflite',  True,  'best_full_int8_edgetpu.tflite'),
 }
 
+# Registered models, by the name modes.<mode>.model uses. Each maps to its own
+# target table. 'heron' is the daylight model and its table is TARGETS above,
+# unchanged. A future IR model is one new entry here — ai.target still picks
+# the backend for every model, so it stays the only hardware switch.
+MODELS = {
+    'heron': TARGETS,
+}
+
 EDGETPU_LIB = 'libedgetpu.so.1'
+
+
+def model_path(model: str, target: str, model_dir: str = './models') -> Path:
+    return Path(model_dir) / MODELS[model][target][0]
 
 
 class ModelLoadError(RuntimeError):
@@ -33,14 +45,22 @@ class ModelLoadError(RuntimeError):
 
 
 class ModelLoader:
-    def __init__(self, target: str, num_threads: int = 4, model_dir: str = './models'):
-        if target not in TARGETS:
+    def __init__(self, target: str, num_threads: int = 4, model_dir: str = './models',
+                 model: str = 'heron'):
+        if model not in MODELS:
             raise ModelLoadError(
-                f"ai.target is '{target}' but must be one of: {', '.join(sorted(TARGETS))}.\n"
+                f"model '{model}' is not registered. Registered: {', '.join(sorted(MODELS))}.\n"
+                f"  Fix: edit config.yaml -> modes.<mode>.model"
+            )
+        targets = MODELS[model]
+        if target not in targets:
+            raise ModelLoadError(
+                f"ai.target is '{target}' but must be one of: {', '.join(sorted(targets))}.\n"
                 f"  Fix: edit config.yaml -> ai.target"
             )
 
-        filename, self.use_edge_tpu, source_name = TARGETS[target]
+        filename, self.use_edge_tpu, source_name = targets[target]
+        self.model = model
         self.target = target
         self.model_path = Path(model_dir) / filename
         self.num_threads = num_threads

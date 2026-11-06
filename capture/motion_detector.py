@@ -11,12 +11,23 @@ logger = logging.getLogger(__name__)
 class MotionDetector:
     def __init__(self, sensitivity: int = 5000):
         self.sensitivity = sensitivity
+        self.reset()
+        logger.info(f"Motion detector initialized with sensitivity: {sensitivity}")
+
+    def reset(self):
+        """Forget the learned background.
+
+        Called when the frame type settles on a new mode. An IR cut changes
+        every pixel at once; the old daylight background would otherwise read
+        the whole IR scene as motion until it re-learned (history=500 frames,
+        ~100 s at 5 fps). A fresh subtractor reports no motion on its first
+        frames, so this costs no blind spot.
+        """
         self.background_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=500,
             varThreshold=16,
             detectShadows=True
         )
-        logger.info(f"Motion detector initialized with sensitivity: {sensitivity}")
     
     def detect(self, frame: np.ndarray) -> bool:
         if frame is None:

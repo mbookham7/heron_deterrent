@@ -17,32 +17,16 @@
 
 motion:
   sensitivity: 5000
+  # Applies only while the frame type is establishing (startup) or switching
+  # (mid dawn/dusk cut). Each settled mode has its own cooldown_seconds below.
   cooldown_seconds: 10
 
 ai:
   target: cpu
-  # Two thresholds, because one number cannot do both jobs. A false BANG is
-  # nearly free; being 9.6 s late to it is not — so the deter path is fast and
-  # optimistic. A false ALERT costs the user's attention and their trust in
-  # the dashboard — so the alert path is strict and confirmed across frames.
-  #
-  #   deter_threshold  — fires the sound. Single trigger frame, max-pool.
-  #   alert_threshold  — governs recording + SMS + dashboard stats.
-  #                       Requires alert_vote_k of the last alert_vote_m
-  #                       key frames to clear it (not the previous max-pool,
-  #                       which handed a spurious spike five chances to win).
-  #
-  # These defaults are measured, not vibes: run tools/measure_thresholds.py
-  # to re-derive them from the current media/ snapshot. Do that when you have
-  # more field data — the current sample is thin.
-  deter_threshold: 0.90
-  alert_threshold: 0.95
+  # Per-model thresholds live under modes: below. These two govern the voting
+  # pass for any mode with a model.
   alert_vote_k: 3              # need k of the last m key frames above alert_threshold
   alert_vote_m: 5              # matches extract_key_frames default in main.py
-  # Deprecated: kept as a fallback so an older config still boots. If both new
-  # keys are missing, both paths use this. Remove once every deployment has
-  # migrated.
-  confidence_threshold: 0.90
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:
     0: "heron"                 # The trained model is single-class. Adding entries
@@ -61,14 +45,22 @@ audio:
 
 storage:
   retention_days: 365
-  # Hard ceiling on the ephemeral clip dirs (heron/, other/, unknown/). Retention
-  # by age cannot protect a small card: at 100 events/day a 2 GB partition fills
-  # in about four months, long before a 365-day cutoff removes anything. Oldest
-  # clips go first.
-  # The Coral's /home is a separate 2 GB partition — check with: df -h /home
-  max_media_gb: 1.0
-  # Soft warning for labeled/. NEVER causes deletion — the training data must
-  # not be silently destroyed by a size sweep. If it trips, move labeled/ off
+  # Hard ceilings on the clip dirs, as two SEPARATE pools so neither can evict
+  # the other. Retention by age cannot protect a card on its own; these caps
+  # are what actually bound growth. Oldest clips in a pool go first.
+  #
+  #   max_media_gb  — heron/, other/, unknown/: clips a model looked at.
+  #   max_motion_gb — motion/: unclassified night and transition clips. A bad
+  #                   night (moths at the IR LEDs, rain on the housing) can
+  #                   fill this and evict its OWN oldest clips, never daylight.
+  #
+  # Sized for the Pi's SD card (20 GB together). On a Coral, whose /home is a
+  # separate 2 GB partition, these must come down to ~1.0 total.
+  # Check with: df -h $(dirname media)
+  max_media_gb: 15.0
+  max_motion_gb: 5.0
+  # Soft warning for labeled/ (all of it: day/, ir/, dark/). NEVER causes
+  # deletion — the training data must not be silently destroyed by a size sweep. If it trips, move labeled/ off
   # the card, do not raise the limit and forget.
   max_labeled_gb: 5.0
   media_path: "./media/"
@@ -84,10 +76,9 @@ mqtt:
     unclassified: "heron/unclassified"
     status: "heron/system/status"
 
+# No active_hours: the system runs round the clock and branches on what the
+# camera is producing. See frame_type: and modes: below.
 system:
-  active_hours:
-    start: "06:00"
-    end: "20:00"
   camera_device_id: 0
   frame_rate: 5
   resolution:
@@ -95,20 +86,83 @@ system:
     height: 480
 
 # ------------------------------------------------------------------
+# FRAME TYPE — what kind of image the camera is producing.
+#
+#   day  — colour, adequately lit
+#   ir   — monochrome: the camera has cut to infrared
+#   dark — colour but very dim (a camera with no IR illuminator, at night)
+#
+# Read off the pixels, never the clock: the camera decides when to cut
+# to IR. chroma = mean difference between colour channels (IR ~0);
+# luma = mean brightness, both 0-255. ./preflight.py prints both for a
+# live frame — use those to tune. If the IR camera turns out to tint
+# its IR frames (faint magenta instead of grey), raise mono_max_chroma
+# and ambiguous_chroma above the tint.
+# ------------------------------------------------------------------
+frame_type:
+  mono_max_chroma: 1.5     # below this (on a lit frame) = IR
+  ambiguous_chroma: 2.5    # 1.5-2.5 = dead band: transition frame, never votes
+  dark_max_luma: 35        # colour frame dimmer than this = dark
+  black_max_luma: 8        # nothing visible at all = dark, whatever the chroma
+  switch_after_frames: 10  # consecutive agreeing frames to change mode (~2 s)
+  sample_step: 8           # classify every 8th pixel on each axis
+
+# ------------------------------------------------------------------
+# MODES — what to do in each frame type.
+#
+# Day and night are different image domains (see README "Day and
+# night"), so each mode names its own model — or null, which means
+# motion-only: no inference, record every trigger, label it
+# 'motion' (unclassified), raise a dashboard alert, never deter.
+#
+# deterrent is the ONLY switch for the sound. A mode can restrict it,
+# nothing can enable it beyond what that mode's model decides, and
+# collect_mode has no say. A motion-only mode with deterrent: true is
+# a startup error — it would fire on every moth.
+#
+# Thresholds are measured, not vibes: tools/measure_thresholds.py
+# re-derives the day values and prints the block to paste here.
+#   deter_threshold  — fires the sound. Single trigger frame.
+#   alert_threshold  — governs recording + SMS + dashboard stats, via
+#                      ai.alert_vote_k of ai.alert_vote_m key frames.
+#   record_threshold — collect mode only: record anything above this.
+#
+# cooldown_seconds is per mode. Night is long on purpose: moth clips
+# ten seconds apart are near-duplicates that bloat the dataset and
+# leak across a train/val split.
+#
+# shadow_model (motion-only modes only): run that model on the trigger
+# frame and LOG its confidence in the clip's metadata. Never acted on.
+# Costs one inference per trigger. Off unless set.
+# ------------------------------------------------------------------
+modes:
+  day:
+    model: heron
+    deter_threshold: 0.90
+    alert_threshold: 0.95
+    record_threshold: 0.30
+    deterrent: false       # silent everywhere for now; true here is the one switch
+    cooldown_seconds: 10
+  ir:
+    model: null            # no IR model exists yet — motion-only
+    deterrent: false
+    cooldown_seconds: 45
+    shadow_model: null     # set to heron to log how the day model transfers
+  dark:
+    model: null
+    deterrent: false
+    cooldown_seconds: 45
+
+# ------------------------------------------------------------------
 # COLLECT MODE — data collection at the pond.
 #
 # The point of this flag: put the device out with the model as-is and
 # have it manufacture training data instead of relying on it. Collect
-# mode records any motion event whose best key-frame score clears
-# record_threshold (much lower than alert_threshold), so the dashboard
-# fills with borderline cases you can then label. deterrent_enabled
-# is separate: you may want to collect data with the sound OFF, so
-# behaviour is not confounded by the deterrent going off constantly.
+# mode records any day motion event whose best key-frame score clears
+# modes.day.record_threshold (much lower than alert_threshold), so the
+# dashboard fills with borderline cases you can then label.
 #
-# Off in production. Alerts and the deter path work exactly as before
-# when this is off.
+# It does NOT touch the deterrent — that is modes.<mode>.deterrent.
 # ------------------------------------------------------------------
 collect_mode:
   enabled: false
-  record_threshold: 0.30   # everything above this gets a clip on disk
-  deterrent_enabled: true  # independently switchable — false = silent run

@@ -2,36 +2,41 @@
 # ============================================================
 # FILE: tests/test_collect_mode.py
 #
-# Collect mode exists so the device can sit at the pond and manufacture
-# training data with the current (too-weak-to-trust) model. Two flags:
+# Guards the deterrent gate and collect mode's (now narrower) job.
 #
-#   collect_mode.enabled           — lowers the detector's anchor floor to
-#                                    record_threshold, so borderline motion
-#                                    events land in the dashboard for
-#                                    manual labelling.
-#   collect_mode.deterrent_enabled — separately switchable. False = silent
-#                                    run: recording happens, sound does not.
-#                                    Prevents the deterrent from confounding
-#                                    behavioural observation.
+#   modes.<mode>.deterrent  — the ONE switch for the sound. A silent mode
+#                             still records and alerts; it just never plays.
+#   collect_mode.enabled    — lowers the detector's anchor floor to
+#                             modes.day.record_threshold so borderline
+#                             events surface. It has NO say over the sound.
 #
-# The critical property this test guards: a deterrent-DISABLED collect run
-# must still record. Silencing the sound must not silence the data.
+# The previous design silenced the sound only when collect_mode.enabled AND
+# collect_mode.deterrent_enabled=false, so a deploy with collect mode off
+# fired the deterrent regardless. Two flags, one behaviour. These tests pin
+# the decoupling.
 #
 # Run with pytest, or directly:
 #     python tests/test_collect_mode.py
 # ============================================================
 
 import sys
-import types
 import unittest.mock as mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from utils.modes import ModeConfig  # noqa: E402
 
-def _build_system(collect_enabled: bool, deterrent_enabled: bool):
+
+def _mode(deterrent: bool, record=0.30):
+    return ModeConfig(name='day', model='heron', deterrent=deterrent,
+                      cooldown_seconds=10, deter_threshold=0.90,
+                      alert_threshold=0.95, record_threshold=record)
+
+
+def _build_system(collect_enabled: bool):
     """Instantiate HeronDeterrentSystem with every heavy dependency stubbed,
-    so trigger_deterrent's collect-mode logic can be exercised in isolation.
+    so trigger_deterrent's gate can be exercised in isolation.
 
     Reaches directly for the __new__ trick because __init__ pulls in a
     camera, a tflite interpreter, alsa, and mqtt — none of which belong
@@ -41,48 +46,44 @@ def _build_system(collect_enabled: bool, deterrent_enabled: bool):
 
     system = HeronDeterrentSystem.__new__(HeronDeterrentSystem)
     system.collect_mode_enabled = collect_enabled
-    system.deterrent_enabled = deterrent_enabled
     system.audio_player = mock.Mock()
     system.mqtt_client = mock.Mock()
     return system
 
 
-def test_collect_off_still_plays_sound():
-    """The default path is unaffected. If someone regresses the gate, this
-    fails."""
-    system = _build_system(collect_enabled=False, deterrent_enabled=False)
+def test_silent_mode_is_silent_with_collect_mode_off():
+    """The coupling bug: collect mode off used to mean the sound fired no
+    matter what. The mode flag alone must silence it."""
+    system = _build_system(collect_enabled=False)
 
-    system.trigger_deterrent()
-
-    system.audio_player.play_random.assert_called_once()
-
-
-def test_collect_on_with_deterrent_enabled_still_plays_sound():
-    """Collect mode with the deterrent left ON must not silence."""
-    system = _build_system(collect_enabled=True, deterrent_enabled=True)
-
-    system.trigger_deterrent()
-
-    system.audio_player.play_random.assert_called_once()
-
-
-def test_collect_on_with_deterrent_disabled_is_silent():
-    """The specific case the field-deployment relies on: data collection with
-    the sound OFF. audio_player MUST NOT be called."""
-    system = _build_system(collect_enabled=True, deterrent_enabled=False)
-
-    system.trigger_deterrent()
+    system.trigger_deterrent(_mode(deterrent=False))
 
     system.audio_player.play_random.assert_not_called()
 
 
-def test_collect_on_with_deterrent_disabled_still_publishes_mqtt():
+def test_silent_mode_is_silent_with_collect_mode_on():
+    system = _build_system(collect_enabled=True)
+
+    system.trigger_deterrent(_mode(deterrent=False))
+
+    system.audio_player.play_random.assert_not_called()
+
+
+def test_armed_mode_plays_whatever_collect_mode_says():
+    """Collect mode no longer has a say over the sound in either direction."""
+    for collect in (False, True):
+        system = _build_system(collect_enabled=collect)
+        system.trigger_deterrent(_mode(deterrent=True))
+        system.audio_player.play_random.assert_called_once()
+
+
+def test_silenced_still_publishes_mqtt():
     """Silenced runs still emit an MQTT event so the counterfactual is visible.
     Otherwise a user could not tell 'deterrent disabled' from 'model never
     fired'."""
-    system = _build_system(collect_enabled=True, deterrent_enabled=False)
+    system = _build_system(collect_enabled=False)
 
-    system.trigger_deterrent()
+    system.trigger_deterrent(_mode(deterrent=False))
 
     system.mqtt_client.publish.assert_called_once()
     topic, payload = system.mqtt_client.publish.call_args[0]
@@ -90,20 +91,17 @@ def test_collect_on_with_deterrent_disabled_still_publishes_mqtt():
     assert payload['event'] == 'deterrent_silenced', (
         f"silenced event must be distinguishable from a real fire: {payload}"
     )
+    assert payload['mode'] == 'day'
 
 
 def test_anchor_floor_drops_when_collect_mode_lowers_the_bar():
     """Config side: enabling collect mode with a low record_threshold must
     reach the detector. Otherwise the detector still filters at alert_threshold
-    and record_threshold does nothing.
+    and record_threshold does nothing."""
+    from main import anchor_floor
 
-    This is a pure config-plumbing test — no model involved."""
-    # Simulate the _initialize_components logic without instantiating anything.
-    deter, alert, record = 0.90, 0.95, 0.30
-    floor_off  = min(deter, alert)
-    floor_on   = min(deter, alert, record)
-    assert floor_off == 0.90
-    assert floor_on  == 0.30, (
+    assert anchor_floor(_mode(False), collect_enabled=False) == 0.90
+    assert anchor_floor(_mode(False), collect_enabled=True) == 0.30, (
         "collect mode must lower the detector's anchor floor to "
         "record_threshold — otherwise borderline events never surface"
     )

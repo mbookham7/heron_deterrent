@@ -196,3 +196,70 @@ class FrameTypeTracker:
             logger.warning(f"Frame type: {previous or 'startup'} -> {raw}")
             return True
         return False
+
+
+def clip_frame_types(frames, cfg: FrameTypeConfig) -> list:
+    """Per-frame type of a clip, from the LIVE frames, recorded at capture.
+
+    This is the only trustworthy source for labelling decisions. Re-classifying
+    a frame decoded back out of the saved .mp4 is not: the encoder's colour
+    conversion puts a uniform cast of a few levels on a pure-grey IR frame
+    (measured: chroma 0.0 live -> 2.67 after encoding), which reads as daylight.
+    """
+    return [classify_frame(f, cfg) or AMBIGUOUS for f in frames]
+
+
+def resolve_label_domain(row_frame_type: Optional[str], recorded: Optional[str],
+                         requested: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """Which labelled-data tree a hand-labelled frame belongs in.
+
+    Returns (domain, explanation). domain is None when the frame must NOT be
+    filed; the explanation says why, for the operator.
+
+      row_frame_type — the clip's state at trigger: day/ir/dark, or
+                       establishing/switching, or None for a legacy row.
+      recorded       — THIS frame's type as classified live at capture
+                       (day/ir/dark/ambiguous), or None if no record exists
+                       (legacy rows, uploaded test clips).
+      requested      — the domain the operator picked, if any.
+
+    Settled clip with a record: the frame must agree with the clip. A 5-second
+        clip can straddle a mode switch, and a frame from the far side of the
+        cut must not ride into the wrong set — refuse rather than guess.
+    Unsettled clip with a record: never filed automatically. The operator
+        must name the domain, and the recorded frame type must agree.
+    No record: nothing machine-checkable, so the operator must name the
+        domain. A settled clip still pins it.
+    """
+    if requested is not None and requested not in FRAME_TYPES:
+        return None, f"unknown domain {requested!r}"
+    settled = row_frame_type in FRAME_TYPES
+    if settled and requested is not None and requested != row_frame_type:
+        return None, (f"clip was recorded in {row_frame_type} mode; it cannot "
+                      f"be filed as {requested}")
+
+    if recorded is None:
+        if requested is None:
+            return None, ("no per-frame record for this clip (recorded before frame "
+                          "types existed, or uploaded). Confirm the domain by eye "
+                          "to file it")
+        return requested, f"confirmed by operator; no per-frame record"
+
+    if settled:
+        if recorded != row_frame_type:
+            return None, (f"this frame was {recorded} when captured, but the clip "
+                          f"was recorded in {row_frame_type} mode — a transition "
+                          f"frame. Pick another frame.")
+        return row_frame_type, f"{row_frame_type} clip, frame was {recorded} when captured"
+
+    origin = (f"while {row_frame_type}" if row_frame_type
+              else "before frame types were recorded")
+    if recorded not in FRAME_TYPES:
+        return None, (f"clip was recorded {origin} and this frame was {recorded} "
+                      f"when captured — it cannot be filed in any domain")
+    if requested is None:
+        return None, (f"clip was recorded {origin}, so it has no domain. This "
+                      f"frame was {recorded} when captured: confirm the domain to file it")
+    if requested != recorded:
+        return None, f"you chose {requested}, but this frame was {recorded} when captured"
+    return recorded, f"confirmed by operator; frame was {recorded} when captured"

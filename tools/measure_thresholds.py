@@ -2,7 +2,7 @@
 # ============================================================
 # FILE: tools/measure_thresholds.py
 #
-# Re-derives ai.deter_threshold and ai.alert_threshold from actual footage,
+# Re-derives modes.day.deter_threshold and modes.day.alert_threshold from actual footage,
 # so config.yaml stops carrying numbers no-one can reproduce. Also prints
 # the exact YAML block to paste into config.
 #
@@ -555,11 +555,11 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"Suggested config (measured, canonical positives={canonical})")
-    print(f"\n  ai.deter_threshold: {deter}")
+    print(f"\n  modes.day.deter_threshold: {deter}")
     print(f"    per-frame:  recall={deter_recall:.2f}  fpr={deter_fpr:.3f}")
     print(f"    intent:     one confident frame fires the sound; false bang cheap, "
           f"late bang expensive.")
-    print(f"\n  ai.alert_threshold: {alert_t}")
+    print(f"\n  modes.day.alert_threshold: {alert_t}")
     print(f"  ai.alert_vote_k:    {args.k}")
     print(f"  ai.alert_vote_m:    {args.m}")
     print(f"    per-clip N-of-M ({args.k}-of-{args.m}):"
@@ -568,10 +568,14 @@ def main():
           f"call across frames.")
 
     # ---- What the CURRENT config would score ------------------------------
-    current_deter = config.get('ai.deter_threshold',
-                               config.get('ai.confidence_threshold', 0.90))
-    current_alert = config.get('ai.alert_threshold',
-                               config.get('ai.confidence_threshold', 0.95))
+    # Read from where the running system reads them. A silent default here
+    # would print a comparison against numbers nobody configured.
+    current_deter = config.get('modes.day.deter_threshold')
+    current_alert = config.get('modes.day.alert_threshold')
+    if current_deter is None or current_alert is None:
+        print("ERROR: config.yaml has no modes.day.deter_threshold / "
+              "alert_threshold to compare against", file=sys.stderr)
+        sys.exit(2)
     current_k = config.get('ai.alert_vote_k', args.k)
     if neg_frame_scores:
         cur_deter_fpr = sum(s >= current_deter for s in neg_frame_scores) / len(neg_frame_scores)
@@ -580,7 +584,7 @@ def main():
 
     print("\n" + "-" * 60)
     print("Current config for comparison")
-    print(f"  ai.deter_threshold={current_deter}, fpr={cur_deter_fpr:.3f}")
+    print(f"  modes.day.deter_threshold={current_deter}, fpr={cur_deter_fpr:.3f}")
     # Show recall under every mode so the sensitivity is visible at the
     # decision line, not buried in the sensitivity table.
     for mode in modes:
@@ -588,7 +592,7 @@ def main():
         rec = sum(s >= current_deter for s in frames) / max(len(frames), 1)
         marker = ' (canonical)' if mode == canonical else ''
         print(f"    recall under sim={mode}{marker}: {rec:.2f}")
-    print(f"  ai.alert_threshold={current_alert} @ {current_k}-of-{args.m}:")
+    print(f"  modes.day.alert_threshold={current_alert} @ {current_k}-of-{args.m}:")
     for mode in modes:
         per_clip = pos_per_clip_by_mode[mode]
         rec = voting_recall(per_clip, current_alert, current_k)
@@ -596,9 +600,10 @@ def main():
         marker = ' (canonical)' if mode == canonical else ''
         print(f"    sim={mode}{marker}: recall={rec:.2f}  precision-proxy={prec:.2f}")
 
-    print(f"\nCopy into config.yaml -> ai:")
-    print(f"  deter_threshold: {deter}")
-    print(f"  alert_threshold: {alert_t}")
+    print(f"\nCopy into config.yaml -> modes: day:")
+    print(f"    deter_threshold: {deter}")
+    print(f"    alert_threshold: {alert_t}")
+    print(f"and into config.yaml -> ai:")
     print(f"  alert_vote_k: {args.k}")
     print(f"  alert_vote_m: {args.m}")
 

@@ -94,61 +94,17 @@ echo ""
 echo "Creating directory structure..."
 mkdir -p models sounds media data
 
-# Both boards use CPU inference today. "edgetpu" exists as a target but its
-# compiled model detects nothing (quantisation destroyed the class head), so
-# nothing selects it automatically.
-TARGET=cpu
-
-# Create default config if it doesn't exist
+# config.yaml is tracked in git and is the only copy of the schema. There used
+# to be a second copy here as a heredoc; it drifted (it still carried a 0.75
+# threshold and active_hours long after both were gone), so restore from git
+# instead of generating.
 if [ ! -f config.yaml ]; then
     echo ""
-    echo "Creating default config.yaml..."
-    cat > config.yaml << EOF
-motion:
-  sensitivity: 5000
-  cooldown_seconds: 10
-
-ai:
-  target: ${TARGET}
-  confidence_threshold: 0.75
-  num_threads: 4
-  labels:
-    0: "heron"
-
-alert:
-  sms_enabled: false
-  sms_throttle_minutes: 15
-
-audio:
-  volume: 80
-  sound_path: "./sounds/"
-
-storage:
-  retention_days: 365
-  max_media_gb: 1.0
-  media_path: "./media/"
-  db_path: "./data/heron.db"
-
-mqtt:
-  enabled: false
-  broker: "localhost"
-  port: 1883
-  topics:
-    detection: "heron/detection"
-    alert: "heron/alert"
-    unclassified: "heron/unclassified"
-    status: "heron/system/status"
-
-system:
-  active_hours:
-    start: "06:00"
-    end: "20:00"
-  camera_device_id: 0
-  frame_rate: 5
-  resolution:
-    width: 640
-    height: 480
-EOF
+    echo "config.yaml is missing — restoring the tracked copy from git..."
+    git checkout -- config.yaml || {
+        echo "ERROR: could not restore config.yaml. Re-clone the repo, or copy it from another checkout."
+        exit 1
+    }
 fi
 
 echo ""
@@ -158,7 +114,7 @@ echo "Next steps:"
 echo "1. Copy the model for your target into models/ (models are not in git):"
 echo "     target: cpu      ->  models/heron_cpu_int8.tflite   (either board)"
 echo "     target: edgetpu  ->  models/heron_edgetpu.tflite    (Coral, currently broken)"
-echo "   config.yaml was generated with target: ${TARGET}"
+echo "   config.yaml selects the backend with ai.target (currently: $(grep -m1 "^  target:" config.yaml | awk "{print \$2}"))"
 echo "2. Add WAV sound files to sounds/ (startup fails if it is empty)"
 echo "3. For SMS, put credentials in /etc/heron-deterrent.env (root, mode 600) —"
 echo "   never in config.yaml, which is tracked in git:"

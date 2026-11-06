@@ -211,6 +211,41 @@ def test_config_rejects_unknown_and_incoherent_keys():
         raise AssertionError(f"accepted {bad}")
 
 
+def test_decoded_clip_frames_are_not_trusted_for_classification():
+    """Why labelling uses the capture-time record and never re-classifies.
+
+    Writing a pure-grey IR frame into a video and decoding it back gives it a
+    uniform colour cast from the encoder's colour conversion — enough to read
+    as daylight. If this test ever starts failing because the decoded frame
+    DOES read as IR, the codec changed; the capture-time record is still the
+    right source, so do not "simplify" labelling back to re-classifying.
+    """
+    import tempfile
+    from capture.frame_classifier import clip_frame_types
+
+    mono = np.full((H, W, 3), 100, np.uint8)
+    mono[100:200, 100:300] = 180
+    assert clip_frame_types([mono], CFG) == [IR]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/clip.mp4"
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), 5, (W, H))
+        if not writer.isOpened():
+            import pytest
+            pytest.skip("no mp4v writer on this platform")
+        for _ in range(5):
+            writer.write(mono)
+        writer.release()
+        cap = cv2.VideoCapture(path)
+        cap.read()
+        ok, decoded = cap.read()
+        cap.release()
+    assert ok
+    assert classify_frame(decoded, CFG) != IR, (
+        "decoded IR frame now classifies as IR — see docstring before acting on this"
+    )
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0

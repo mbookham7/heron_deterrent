@@ -11,7 +11,20 @@ import json
 import logging
 from pathlib import Path
 
+from capture.frame_classifier import FRAME_TYPES, classify_frame, measure, resolve_label_domain
+
 logger = logging.getLogger(__name__)
+
+# Values the dashboard may filter on. 'unknown' = no settled domain: legacy
+# rows, and clips recorded while establishing or switching.
+FRAME_TYPE_FILTERS = set(FRAME_TYPES) | {'unknown'}
+
+
+def _frame_type_arg():
+    ft = request.args.get('frame_type') or None
+    if ft is not None and ft not in FRAME_TYPE_FILTERS:
+        raise ValueError(f"frame_type must be one of {sorted(FRAME_TYPE_FILTERS)}")
+    return ft
 
 app = Flask(__name__)
 system = None
@@ -73,9 +86,23 @@ def get_detections():
 
     label = request.args.get('label')
     limit = min(int(request.args.get('limit', 100)), 500)
+    try:
+        frame_type = _frame_type_arg()
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
-    detections = system.database.get_detections(label=label, limit=limit)
+    detections = system.database.get_detections(label=label, limit=limit,
+                                                frame_type=frame_type)
     return jsonify(detections)
+
+
+@app.route('/api/stats')
+def get_stats():
+    """Counts for the stats strip. Motion-only rows are reported separately
+    and never as detections — no model looked at them."""
+    if not system:
+        return jsonify({})
+    return jsonify(system.database.get_stats())
 
 @app.route('/api/unclassified')
 def get_unclassified():
@@ -93,13 +120,27 @@ ALLOWED_LABELS = {'heron', 'cat', 'dog', 'bird', 'person', 'unknown'}
 
 
 def _detection_by_id(detection_id: int):
-    """The Detection row for `detection_id`, or None. Fetches enough rows to
-    cover the recent history the UI would be labelling; a lookup by id would be
-    cleaner but that would need a new database method."""
-    for d in system.database.get_detections(limit=500):
-        if d['id'] == detection_id:
-            return d
-    return None
+    """The Detection row for `detection_id`, or None. A direct lookup: round
+    the clock, night motion rows would push older clips out of any
+    "recent 500" window long before they were labelled."""
+    return system.database.get_detection(detection_id)
+
+
+def _recorded_frame_type(detection, index: int, frame_count: int):
+    """This frame's type as classified live at capture, or None if the clip
+    has no record (legacy rows, uploads). Raises ValueError if the record and
+    the decoded clip disagree on length — then the index cannot be trusted to
+    point at the same frame, and nothing should be filed."""
+    try:
+        types = json.loads(detection.get('metadata') or '{}').get('clip_frame_types')
+    except (TypeError, ValueError):
+        types = None
+    if not types:
+        return None
+    if len(types) != frame_count:
+        raise ValueError(f"clip has {frame_count} frames but {len(types)} recorded "
+                         f"frame types — cannot tell which frame is which")
+    return types[index]
 
 
 def _open_clip(detection_id: int):
@@ -163,6 +204,55 @@ def frame_jpeg(detection_id, index):
         cap.release()
 
 
+@app.route('/api/detection/<int:detection_id>/frame/<int:index>/domain')
+def frame_domain(detection_id, index):
+    """Which training set this frame would be filed under, BEFORE saving.
+
+    The labelling modal shows this so an IR frame cannot be dropped into the
+    daylight set by mistake. `domain` is null when the frame cannot be filed
+    as things stand; `needs_confirmation` is true when the clip has no settled
+    frame type and the operator must pick one (?requested=day|ir|dark).
+    """
+    if not system:
+        return jsonify({'error': 'System not initialized'}), 500
+    detection = _detection_by_id(detection_id)
+    opened = _open_clip(detection_id)
+    if not detection or not opened:
+        return jsonify({'error': 'clip not found'}), 404
+    cap, _w, _h, count = opened
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(index, count - 1)))
+        ok, frame = cap.read()
+    finally:
+        cap.release()
+    if not ok:
+        return jsonify({'error': 'cannot decode frame'}), 500
+
+    idx = max(0, min(index, count - 1))
+    requested = request.args.get('requested') or None
+    try:
+        recorded = _recorded_frame_type(detection, idx, count)
+    except ValueError as e:
+        return jsonify({'domain': None, 'reason': str(e), 'needs_confirmation': False})
+    domain, why = resolve_label_domain(detection.get('frame_type'), recorded, requested)
+
+    # Advisory only: the decoded frame carries the encoder's colour cast, so
+    # this can read an IR frame as day. Shown to help a human confirm by eye
+    # when there is no capture-time record; never used to route anything.
+    cfg = system.frame_tracker.cfg
+    chroma, luma = measure(frame, cfg.sample_step)
+    return jsonify({
+        'domain': domain,
+        'reason': why,
+        'row_frame_type': detection.get('frame_type'),
+        'recorded_frame_type': recorded,
+        'needs_confirmation': domain is None and (
+            recorded is None or detection.get('frame_type') not in FRAME_TYPES),
+        'advisory': {'decoded_reads_as': classify_frame(frame, cfg) or 'ambiguous',
+                     'chroma': round(chroma, 2), 'luma': round(luma, 1)},
+    })
+
+
 @app.route('/api/label', methods=['POST'])
 def submit_label():
     """Persist a label for a detection and write the corresponding training file.
@@ -187,6 +277,9 @@ def submit_label():
         label = data.get('label')
         bboxes = data.get('bboxes', []) or []
         frame_index = int(data.get('frame_index', 0))
+        # Only needed (and only honoured) for a clip with no settled frame
+        # type; see resolve_label_domain.
+        requested_domain = data.get('domain') or None
 
         if label not in ALLOWED_LABELS:
             return jsonify({'success': False, 'error': f'Invalid label: {label}'}), 400
@@ -201,8 +294,13 @@ def submit_label():
                          f"this frame contains no heron."
             }), 400
 
-        system.database.update_manual_label(detection_id, label)
+        detection = _detection_by_id(detection_id)
+        if not detection:
+            return jsonify({'success': False, 'error': 'detection not found'}), 404
 
+        # The row is marked labelled only AFTER the training file is written,
+        # so a refused domain leaves the clip in the triage queue.
+        domain = None
         opened = _open_clip(detection_id)
         if opened:
             cap, native_w, native_h, count = opened
@@ -214,20 +312,33 @@ def submit_label():
                     return jsonify({'success': False,
                                     'error': f'cannot decode frame {idx}'}), 500
 
+                # Day and night training data must never mix. The domain comes
+                # from the clip's frame type, cross-checked against THIS frame's
+                # type as recorded live at capture; a clip with no settled type
+                # or no record needs the operator to name one.
+                recorded = _recorded_frame_type(detection, idx, count)
+                domain, why = resolve_label_domain(
+                    detection.get('frame_type'), recorded, requested_domain)
+                if domain is None:
+                    return jsonify({'success': False, 'error': why}), 409
+
                 # For labels that do not require a bbox (cat/dog/bird/person/
                 # unknown), any bboxes the client sent are dropped and an empty
                 # .txt is written. That IS a valid YOLO background example.
                 write_boxes = bboxes if label in LABELS_REQUIRING_BBOX else []
                 _validate_pixel_boxes(write_boxes, native_w, native_h)
                 system.media_store.save_labeled_image(
-                    frame, label, write_boxes, detection_id
+                    frame, label, write_boxes, detection_id, frame_type=domain
                 )
             finally:
                 cap.release()
 
+        system.database.update_manual_label(detection_id, label)
+
         logger.info(f"Label submitted: detection {detection_id} -> {label} "
-                    f"(frame {frame_index}, {len(bboxes)} box(es))")
-        return jsonify({'success': True})
+                    f"(frame {frame_index}, {len(bboxes)} box(es), "
+                    f"domain {domain or 'none — no clip'})")
+        return jsonify({'success': True, 'domain': domain})
 
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
@@ -261,7 +372,9 @@ def trigger_deterrent():
         return jsonify({'success': False, 'error': 'System not initialized'})
 
     try:
-        system.trigger_deterrent()
+        # Manual speaker test. Plays whatever the mode says — modes gate only
+        # the AUTOMATIC deterrent.
+        system.play_deterrent_manually()
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Error triggering deterrent: {e}")
@@ -308,7 +421,18 @@ def upload_test_video():
                 pass
 
         if frames:
-            system.process_detection_event(frames)
+            # Same rule as the live loop: a model runs only on the domain it
+            # was trained for. An IR or dark upload would get a confident,
+            # meaningless daylight score — refuse it instead.
+            frame_type = system.classify_clip(frames)
+            mode = system.modes.get(frame_type)
+            if mode is None or mode.motion_only:
+                return jsonify({
+                    'success': False,
+                    'error': f"clip classifies as {frame_type or 'mixed/ambiguous'}; "
+                             f"no model is configured for that frame type",
+                })
+            system.process_detection_event(frames, mode, {'source': 'upload'})
             detections = system.database.get_detections(limit=10)
             heron_detections = [d for d in detections if d.get('label') == 'heron']
 
@@ -332,7 +456,8 @@ def get_heron_detections():
 
     try:
         limit = min(int(request.args.get('limit', 50)), 500)
-        detections = system.database.get_detections(label='heron', limit=limit)
+        detections = system.database.get_detections(label='heron', limit=limit,
+                                                    frame_type=_frame_type_arg())
         return jsonify(detections)
     except Exception as e:
         logger.error(f"Error getting heron detections: {e}")
@@ -344,12 +469,19 @@ def system_status():
         return jsonify({'status': 'offline'})
 
     try:
+        state = system.frame_state()
+        mode = system.modes.get(state)
+        last = system.frame_tracker.last
         status = {
             'status': 'online' if system.running else 'stopped',
             'camera_connected': system.camera.is_connected(),
-            'active_hours': system.is_within_active_hours(),
+            'frame_state': state,
+            'mode': mode.describe() if mode else None,
+            'motion_only': mode is None or mode.motion_only,
+            'deterrent_armed': bool(mode and mode.deterrent),
+            'frame_metrics': last.as_metadata() if last else None,
             'cooldown_elapsed': system.cooldown_elapsed(),
-            'model_loaded': system.detector is not None
+            'models_loaded': sorted(system.detectors),
         }
         return jsonify(status)
     except Exception as e:

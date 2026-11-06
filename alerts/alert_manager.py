@@ -63,15 +63,17 @@ class AlertManager:
                     logger.error(f"Failed to initialize Twilio: {e}")
                     self.sms_enabled = False
 
-    def create_alert(self, alert_type: str, detection, video_path: str = ""):
+    def create_alert(self, alert_type: str, detection, video_path: str = "", *,
+                     frame_type: str, metadata: dict = None):
         message = f"{alert_type}: {detection.label} detected (confidence: {detection.confidence:.2f})"
 
         detection_id = self.database.save_detection(
             label=detection.label,
             confidence=detection.confidence,
             video_path=video_path,
-            metadata={'type': alert_type},
+            metadata={'type': alert_type, **(metadata or {})},
             bbox=detection.bbox,
+            frame_type=frame_type,
         )
 
         alert_id = self.database.save_alert(
@@ -91,6 +93,34 @@ class AlertManager:
             'confidence': detection.confidence,
             'timestamp': datetime.now().isoformat()
         })
+
+    def create_motion_alert(self, frame_type: str, video_path: str, metadata: dict):
+        """A motion trigger no model classified: night, or an unsettled frame type.
+
+        Stored as label 'motion' with NULL confidence — there is no score, and
+        writing 0.0 would read as "the model looked and saw nothing". The
+        message says unclassified in words so nobody reads it as a heron. Never
+        sends SMS: an unclassified trigger is not worth waking anyone for.
+        """
+        message = f"Motion ({frame_type}) — unclassified, no model ran"
+
+        detection_id = self.database.save_detection(
+            label='motion',
+            confidence=None,
+            video_path=video_path,
+            metadata={'type': 'MOTION', **metadata},
+            frame_type=frame_type,
+        )
+        self.database.save_alert(alert_type='MOTION', detection_id=detection_id,
+                                 message=message)
+        logger.info(f"Alert created: {message}")
+
+        self.mqtt_client.publish('unclassified', {
+            'type': 'MOTION',
+            'frame_type': frame_type,
+            'timestamp': datetime.now().isoformat()
+        })
+        return detection_id
 
     def _send_sms(self, alert_id: int, message: str):
         last_sms_time = self.database.get_last_sms_time()
