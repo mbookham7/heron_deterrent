@@ -181,13 +181,15 @@ Edit `config.yaml`. The critical Pi-specific settings are:
 ```yaml
 ai:
   target: cpu                                # The only hardware switch
-  deter_threshold: 0.90                      # Fires the sound. See README "Accuracy".
-  alert_threshold: 0.95                      # Recording + SMS require this AND voting
   alert_vote_k: 3
   alert_vote_m: 5
   num_threads: 4                             # Use all 4 cores
   labels:
     0: "heron"                               # Single-class model — exactly one entry
+
+storage:
+  max_media_gb: 15.0                         # Clips a model looked at
+  max_motion_gb: 5.0                         # Unclassified night clips — separate cap
 
 system:
   frame_rate: 5                              # Keep low — CPU inference is slower
@@ -195,9 +197,19 @@ system:
   resolution:
     width: 640
     height: 480
-  active_hours:
-    start: "06:00"
-    end: "20:00"
+```
+
+There is no `active_hours`: the system runs round the clock and decides day or
+night from the frames themselves. Thresholds and the deterrent switch live per
+mode under `modes:` — see README "Day and night". The storage caps above assume
+a 32 GB or larger card; `./preflight.py` fails if they cannot fit.
+
+The Pi goes into a sealed box, so check the board's temperature after it has
+been in there a while — `./preflight.py` reports it, along with any throttling
+since boot:
+
+```bash
+vcgencmd measure_temp; vcgencmd get_throttled    # throttled=0x0 is what you want
 ```
 
 **Twilio credentials** — use environment variables, not the config file:

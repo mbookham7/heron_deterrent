@@ -12,15 +12,20 @@ the reference; that one is the checklist.
 ## How It Works
 
 ```
-Camera (5 fps) → Motion detection → Inference on the trigger frame
-                                            │
-                        heron ──────────────┤────────────── not heron
-                          │                                     │
-                  Deterrent sound FIRST                  Capture clip,
-                          │                              re-check 5 key frames
-                  Capture clip, save                            │
-                          │                                     │
-                  SQLite ── Dashboard ── SMS / MQTT      "Unclassified" panel
+Camera (5 fps) → Frame type (day / IR / dark / unsettled) → Motion detection
+                                                                 │
+              ┌──────────────────── day ─────────────────────────┤
+              │                                                  │ IR, dark,
+     Inference on the trigger frame                              │ establishing,
+              │                                                  │ switching
+  heron ──────┤────── not heron                                  │
+    │                     │                              Record clip, NO inference
+  Deterrent (if the       Capture clip,                  label "motion" (unclassified)
+  mode allows) FIRST      re-check 5 key frames                  │
+    │                     │                              "To Triage" panel
+  Capture clip, save      "To Triage" panel
+    │
+  SQLite ── Dashboard ── SMS / MQTT
 ```
 
 The ordering matters. Inference runs on the frame that triggered the motion, so
@@ -30,6 +35,98 @@ heron had usually left.
 
 If the trigger frame is inconclusive, the system falls back to capturing a clip
 and scoring five key frames, so a bird caught mid-wingbeat is not written off.
+
+The system runs **round the clock**. There is no time-of-day window: what it does
+depends on what kind of image the camera is producing, below.
+
+## Day and night
+
+Herons feed hardest at first light, which in a UK November is well before
+sunrise. So night is a first-class mode, not an afterthought — and it is a
+different problem, not a darker version of the same one.
+
+### Why an infrared frame is not just a dim daylight frame
+
+When it gets dark the camera switches its own infrared LEDs on and starts
+sending black-and-white frames. Those frames are lit by a torch strapped to the
+camera, in a colour your eye cannot see. That changes what things look like:
+
+- **Brightness falls off with distance.** Near things are bright, the far bank
+  is dark. In daylight the sun lights everything evenly.
+- **Water absorbs infrared**, so the pond reads almost black.
+- **Leaves reflect infrared strongly** (the *Wood effect*), so a planted margin
+  glows white — exactly the background a heron stands against.
+
+A grey heron against a dark-green bank has decent contrast by day. Under IR it
+may be a mid-grey bird against a glowing white bank: different, possibly worse.
+A model trained only on daylight photos has never seen that, and will not
+transfer reliably.
+
+Two rules follow, and the code enforces both:
+
+1. **Separate models, separate training data, never mixed.** At night there will
+   be thousands of empty-pond IR frames and very few with a heron in them. Put
+   them in one training set with the daylight photos and the model learns the
+   shortcut "black-and-white means no heron" — confidently, and exactly
+   backwards. So labelled images go to `media/labeled/day/`, `ir/` or `dark/`,
+   and nothing can file one in the wrong tree.
+2. **No fake IR.** Greyscaling a daylight photo gives a plausible-looking image
+   that is physically wrong: it is how the scene reflects *visible* light, with
+   the colour thrown away, not how it reflects infrared. Water would not go dark
+   and leaves would not glow. There is no such conversion anywhere, and there
+   should not be one.
+
+Until real IR heron footage exists to train on, **night runs motion-only**: any
+movement records a clip, labelled "motion — unclassified", and raises a
+dashboard alert. At four in the morning, movement at the pond is very probably
+wildlife, so that is a reasonable signal on its own — and it saves running a
+~1 s inference on every moth.
+
+### How the frame type is decided
+
+From the pixels, never the clock — the camera decides when it is night, and a
+clock-based guess drifts with the seasons.
+
+| Frame type | What it means | How it is recognised |
+|---|---|---|
+| `day` | Colour, adequately lit | Channels differ (there is colour) and it is bright enough |
+| `ir` | The camera has cut to infrared | Red, green and blue are effectively identical |
+| `dark` | Colour but very dim — a camera with **no** IR LEDs, at night | Some colour noise, low brightness |
+
+`dark` is treated like night: the daylight model does as badly on a murky colour
+frame as on an IR one.
+
+At dawn and dusk the camera can flick between IR and colour, and frames caught
+mid-switch are neither. So the mode only changes after **ten consecutive frames
+agree** (about 2 s) — the same idea as a readiness probe's `successThreshold`.
+Until then the state is `establishing` (just started) or `switching`. Motion in
+those windows is **still recorded**, unclassified, because dawn is exactly when
+the bird turns up; it just is not judged by any model, since nobody knows which
+one applies.
+
+When labelling, the dashboard says which training set the current frame goes
+into. That decision uses each frame's type **as recorded live when it was
+captured**, not a re-check of the saved video: video compression puts a faint
+colour cast on a black-and-white frame, enough to make an IR frame look like
+daylight.
+
+### What runs in each mode
+
+Set per mode in `config.yaml` under `modes:` — see Configuration. Today:
+
+| Mode | Model | Deterrent | Cooldown |
+|---|---|---|---|
+| `day` | `heron` (the daylight model) | **silent** | 10 s |
+| `ir` | none — motion-only | silent | 45 s |
+| `dark` | none — motion-only | silent | 45 s |
+
+The night cooldown is longer on purpose: moth clips ten seconds apart are
+near-duplicates, which bloat the dataset and leak across a train/validation
+split.
+
+Optionally, `modes.ir.shadow_model: heron` runs the daylight model on IR
+triggers and **logs** its confidence in the clip's metadata without ever acting
+on it — a cheap way to measure how badly it transfers.
 
 ---
 
@@ -121,14 +218,35 @@ the inference *backend*, not the board:
 ```yaml
 ai:
   target: cpu                  # "cpu" or "edgetpu" — see Edge TPU status above
-  deter_threshold: 0.90        # fires the deterrent (fast path, single frame)
-  alert_threshold: 0.95        # governs recording + SMS (voted across frames)
   alert_vote_k: 3              # need k of the last m key frames above alert
   alert_vote_m: 5
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
   labels:
     0: "heron"                 # single-class model; more entries fail at startup
+
+modes:                         # one per frame type — see "Day and night"
+  day:
+    model: heron               # registered model name, or null = motion-only
+    deter_threshold: 0.90      # fires the deterrent (fast path, single frame)
+    alert_threshold: 0.95      # governs recording + SMS (voted across frames)
+    record_threshold: 0.30     # collect mode only
+    deterrent: false           # THE switch for the sound; nothing else gates it
+    cooldown_seconds: 10
+  ir:
+    model: null                # no IR model yet
+    deterrent: false           # true here is a startup error: no model, no deterrent
+    cooldown_seconds: 45
+  dark:
+    model: null
+    deterrent: false
+    cooldown_seconds: 45
 ```
+
+Incoherent mode config is a **startup error** that lists every problem at once:
+a motion-only mode with the deterrent armed, an unregistered model, thresholds on
+a model-less mode, or leftover keys from the old layout (`system.active_hours`,
+`ai.deter_threshold`, `ai.alert_threshold`, `ai.confidence_threshold`,
+`collect_mode.record_threshold`, `collect_mode.deterrent_enabled`).
 
 Two thresholds, because one number cannot do both jobs. A false BANG is nearly
 free — the sound is a bang, not a bill — and being late to a bird is expensive,
@@ -200,12 +318,9 @@ that the code agrees with itself.
 | Key | Default | Description |
 |---|---|---|
 | `motion.sensitivity` | `5000` | Minimum contour area to trigger. Lower = more sensitive |
-| `motion.cooldown_seconds` | `10` | Minimum gap between detection events |
+| `motion.cooldown_seconds` | `10` | Gap between triggers while the frame type is establishing/switching. Settled modes use `modes.<mode>.cooldown_seconds` |
 | `ai.target` | `cpu` | `cpu` or `edgetpu` — the only hardware switch |
-| `ai.deter_threshold` | `0.90` | Deterrent fires above this. At 0.90: recall 0.41 (18/44) on stock positives with camera simulation, zero false-positive frames. See "Accuracy" |
-| `ai.alert_threshold` | `0.95` | Recording + SMS require this AND `k`-of-`m` voting |
 | `ai.alert_vote_k` / `alert_vote_m` | `3` / `5` | N-of-M voting on the alert path (see `ai/detector.py`) |
-| `ai.confidence_threshold` | `0.90` | Deprecated fallback for older configs; used when the split keys are absent |
 | `ai.num_threads` | `4` | CPU threads; ignored on `edgetpu` |
 | `ai.labels` | `{0: heron}` | Must match the model's class count exactly |
 | `alert.sms_enabled` | `false` | Needs `/etc/heron-deterrent.env` (see below) |
@@ -213,26 +328,49 @@ that the code agrees with itself.
 | `audio.volume` | `80` | Percent, applied via `amixer` |
 | `audio.sound_path` | `./sounds/` | Startup **fails** if this has no `.wav` files |
 | `storage.retention_days` | `365` | Age-based deletion |
-| `storage.max_media_gb` | `1.0` | **Hard size cap.** Oldest clips deleted first |
+| `storage.max_media_gb` | `15.0` | **Hard size cap** on clips a model looked at (`heron/`, `other/`, `unknown/`). Oldest first |
+| `storage.max_motion_gb` | `5.0` | **Separate hard cap** on unclassified clips (`motion/`), so a noisy night only evicts night clips |
+| `storage.max_labeled_gb` | `5.0` | Soft warning on `labeled/`. Never deletes |
 | `storage.media_path` | `./media/` | Clips, grouped by label |
 | `storage.db_path` | `./data/heron.db` | SQLite database |
 | `mqtt.enabled` | `false` | Optional MQTT publishing |
 | `mqtt.broker` | `localhost` | Broker hostname. Connects asynchronously, retries forever |
 | `mqtt.port` | `1883` | Broker port |
-| `system.active_hours.start/end` | `06:00`/`20:00` | Handles windows spanning midnight |
+| `frame_type.*` | see `config.yaml` | Thresholds for day/IR/dark. Tune with the numbers `./preflight.py` prints |
+| `modes.<mode>.model` | `heron` / `null` | Registered model name, or `null` = motion-only (no inference) |
+| `modes.<mode>.deter_threshold` | `0.90` (day) | Deterrent fires above this. At 0.90: recall 0.41 (18/44) on stock positives with camera simulation, zero false-positive frames. See "Accuracy" |
+| `modes.<mode>.alert_threshold` | `0.95` (day) | Recording + SMS require this AND `k`-of-`m` voting |
+| `modes.<mode>.record_threshold` | `0.30` (day) | Collect mode records anything above this |
+| `modes.<mode>.deterrent` | `false` | Whether the sound may fire in this mode. The only switch for it |
+| `modes.<mode>.cooldown_seconds` | `10` / `45` / `45` | Minimum gap between triggers |
+| `modes.<mode>.shadow_model` | `null` | Motion-only modes: log this model's confidence, never act on it |
+| `collect_mode.enabled` | `false` | Record borderline day events above `record_threshold`. Does not touch the deterrent |
 | `system.camera_device_id` | `0` | V4L2 device number |
 | `system.frame_rate` | `5` | Capture rate, and the rate clips are written at |
 
 ### Why there is a size cap as well as retention
 
-Retention by age cannot protect a small card. Clips are 117 KB, so at 100 events
-per day a 2 GB partition fills in about four months — long before a 365-day
-cutoff deletes anything. A windy pond with a 10-second cooldown can generate far
-more than 100 events a day.
+Retention by age cannot protect a card. At 100 events per day a 2 GB partition
+fills in about four months — long before a 365-day cutoff deletes anything. A
+windy pond, or moths in front of IR LEDs, can generate far more than that.
 
-`storage.max_media_gb` is the backstop that actually bounds growth: oldest files
-go first, checked every five minutes, covering `labeled/` as well as the clip
-directories.
+The caps are the backstop that actually bounds growth, checked every five
+minutes, oldest files first. There are **two pools, each with its own cap**:
+
+| Pool | Directories | Cap |
+|---|---|---|
+| classified | `heron/`, `other/`, `unknown/` | `storage.max_media_gb` |
+| motion | `motion/` | `storage.max_motion_gb` |
+
+With one shared pool, a night of moth clips would evict the unlabelled daylight
+footage — the clips most likely to contain a heron. Separate pools mean a noisy
+night can only evict other night clips.
+
+`labeled/` is in **neither pool** and is never deleted by retention or a cap —
+deleting half of an image/annotation pair silently turns a labelled heron into a
+"no heron here" example. It only triggers the `max_labeled_gb` warning. The
+protection is recursive: any directory under `labeled/`, including ones added
+later, is exempt.
 
 > On the Coral, `/home` is a **separate 2 GB partition** and the repo lives
 > there. `df -h /` showing plenty of space is misleading — check `df -h /home`.
@@ -275,20 +413,42 @@ board, from the repo root:
 ```
 
 ```
-[PASS] config       ai.target=cpu  confidence=0.9  classes=1
-[PASS] model        heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
+[PASS] config       ai.target=cpu  classes=1
+       day: model=heron deter=0.9 alert=0.95 record=0.3, silent, cooldown 10s
+       ir: motion-only (no model), silent, cooldown 45s
+       dark: motion-only (no model), silent, cooldown 45s
+[PASS] modes        3 modes coherent; deterrent silent in every mode
+[PASS] model        heron: heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
 [skip] edgetpu      ai.target is not 'edgetpu'
 [PASS] sounds       1 file(s), 172 KB: startle_default.wav
-[PASS] audio        played startle_default.wav on edgetpu-audio-card — did you hear it?
+[PASS] audio        device present (...), playback not tested (--skip-audio)
 [PASS] camera       device 0 returned a 640x480 frame
-[PASS] disk         1.5 GB free of 1.9 GB on /home (23% used)
+[PASS] frame type   ir (ir 15 of 15 frames)  chroma 0.31  luma 88.2  -> ir: motion-only ...
+[PASS] video        H.264 available — ...
+[PASS] disk         ...
+[PASS] storage      clip caps 15 GB classified + 5 GB motion = 20 GB on a 58.0 GB filesystem
+[PASS] labeled      images by domain: day 0, ir 0, dark 0
 [PASS] database     data/heron.db writable (24 KB)
+[WARN] cpu temp     71.2 C
+       -> Improve cooling: heatsink or fan on the SoC, ...
 [skip] sms          alert.sms_enabled is false
-All 8 checks passed.
 ```
 
-Every failure prints the command that fixes it. Exit status is 0 only when
-everything passes, so it can gate a deploy script.
+(Illustrative, not a captured run.) Every failure prints the command that fixes
+it. Exit status is 0 only when everything passes, so it can gate a deploy
+script. `[WARN]` lines do not fail the run.
+
+**Frame type** prints the raw chroma (how much colour) and luma (brightness)
+behind its verdict. Run preflight once in daylight and once after dark: the two
+readings should land clearly on either side of the `frame_type:` thresholds. If
+the night reading lands in the dead band, the camera is probably tinting its IR
+frames rather than sending pure black-and-white; raise `mono_max_chroma` above
+the tint.
+
+**CPU temperature** matters because the Pi lives in a sealed box. A throttling
+board looks exactly like "inference got slower for no reason". It FAILs at 80 °C
+or if the board is throttling or under-voltage *now*, and WARNs at 70 °C or if
+either has happened since boot.
 
 Note that `preflight.py` run by hand will **not** see credentials from
 `/etc/heron-deterrent.env` — only the service reads that. `export` them in your
@@ -338,16 +498,18 @@ At `http://<board-ip>:5000`.
 
 | Section | Description |
 |---|---|
-| Stats strip | Herons today, total detections, last detection, alert count |
+| Mode pill | Day / IR night / Dark night / establishing / switching; model or motion-only; deterrent armed or silent. Hover for live chroma/luma |
+| Stats strip | Herons today, model detections, last heron, model alerts, and — separately — unclassified motion. Motion is never counted as a detection |
+| Frame-type filter | Day / IR / Dark / Unsettled, across the lists and gallery. Every clip carries a frame-type badge |
 | Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection |
 | Recent Alerts | CRITICAL and WARNING alerts with timestamps |
 | Heron Detections | History with confidence bars |
-| Unclassified | Clips the model returned "unknown" for — label them to build a dataset |
+| To Triage | Clips the model returned "unknown" for, plus unclassified motion clips — label them to build a dataset. The label dialog shows which training set (day/IR/dark) the frame goes to, and blocks saving until there is one |
 | Heron Gallery | Confirmed heron clips |
 | Test Upload | Upload a video to run inference against — the quickest end-to-end proof |
 
 > Every inconclusive motion event creates a WARNING "unknown" alert and saves a
-> clip. That is deliberate — it feeds the Unclassified panel — but at a busy pond
+> clip. That is deliberate — it feeds the To Triage panel — but at a busy pond
 > the alert feed gets noisy. Raise `motion.sensitivity` if so.
 
 The Flask server is the development server. That is fine on a private LAN; do
@@ -358,14 +520,16 @@ not expose it to the internet.
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/api/live-stream` | MJPEG video stream (2 fps) |
-| GET | `/api/system-status` | System health JSON |
+| GET | `/api/system-status` | System health, frame state and mode JSON |
+| GET | `/api/stats` | Counts for the stats strip (motion reported separately) |
 | GET | `/api/alerts` | Recent alerts (param: `limit`) |
-| GET | `/api/detections` | Detection history (params: `label`, `limit`) |
-| GET | `/api/heron-detections` | Heron-only detections (param: `limit`) |
-| GET | `/api/unclassified` | Unlabelled detections |
-| POST | `/api/label` | Submit a manual label `{detection_id, label, bboxes}` |
-| POST | `/api/trigger-deterrent` | Manually fire the deterrent sound |
-| POST | `/api/upload-test-video` | Run inference on an uploaded video |
+| GET | `/api/detections` | Detection history (params: `label`, `limit`, `frame_type` = day/ir/dark/unknown) |
+| GET | `/api/heron-detections` | Heron-only detections (params: `limit`, `frame_type`) |
+| GET | `/api/unclassified` | Unlabelled "unknown" and "motion" detections |
+| GET | `/api/detection/<id>/frame/<i>/domain` | Which training set frame `i` would be filed under (param: `requested`) |
+| POST | `/api/label` | Submit a manual label `{detection_id, label, bboxes, frame_index, domain?}`. 409 if the frame cannot be placed in a domain |
+| POST | `/api/trigger-deterrent` | Manual speaker test. Plays regardless of mode |
+| POST | `/api/upload-test-video` | Run inference on an uploaded video. Refused unless every key frame is a day frame |
 | GET | `/api/media/<filename>` | Serve a stored clip |
 
 > `POST /api/config` exists but is **not safe to call**: it rewrites
@@ -433,11 +597,11 @@ heron_deterrent/
 │   ├── letterbox.py              # The preprocessing convention. Do not bypass
 │   └── model_loader.py           # Target → model file → backend
 │
-├── tests/
-│   └── test_letterbox.py         # Pins preprocessing against Ultralytics
+├── tests/                        # pytest, or run any file directly on the board
 │
 ├── capture/
 │   ├── camera.py                 # Locked, self-healing camera wrapper
+│   ├── frame_classifier.py       # day / IR / dark, with hysteresis
 │   └── motion_detector.py        # MOG2 background subtraction
 │
 ├── deterrent/
@@ -445,7 +609,7 @@ heron_deterrent/
 │
 ├── storage/
 │   ├── database.py               # SQLite (thread-safe)
-│   └── media_store.py            # Clips, retention, size cap
+│   └── media_store.py            # Clips, retention, two size-capped pools, labeled/
 │
 ├── alerts/
 │   ├── alert_manager.py          # SMS + MQTT orchestration
@@ -455,11 +619,14 @@ heron_deterrent/
 │   ├── app.py                    # Flask REST API
 │   └── templates/index.html      # Dashboard
 │
-├── utils/config_loader.py        # YAML config loader
+├── utils/
+│   ├── config_loader.py          # YAML config loader
+│   └── modes.py                  # Per-frame-type modes; validates modes:
 │
 ├── models/                       # *.tflite — gitignored, copy in by hand
 ├── sounds/                       # *.wav — at least one required
-├── media/                        # Auto-created: heron/, other/, unknown/, labeled/
+├── media/                        # Auto-created: heron/ other/ unknown/ motion/ (clips)
+│                                 #   labeled/{day,ir,dark}/{images,labels}/ (training data)
 ├── data/                         # Auto-created: heron.db
 └── docs/
     ├── coral_dev_board_flash_guide.md
@@ -509,8 +676,11 @@ enough, so the resolution is not worth trading.
 The model was trained on ~180 close-up heron images with **no negative
 examples**, which is why non-heron frames occasionally spike to 0.70. The most
 valuable thing you can add is negatives from your own pond: water ripple,
-ducks, foliage, moving shade. Label them via the dashboard's Unclassified panel
-and they are written to `media/labeled/` in YOLO format.
+ducks, foliage, moving shade. Label them via the dashboard's To Triage panel
+and they are written in YOLO format to `media/labeled/day/`, `ir/` or `dark/` —
+one tree per image domain. **Point a training run at exactly one of them.** The
+pre-split `media/labeled/images|labels` layout is no longer written; preflight
+warns if anything is still there.
 
 ---
 
@@ -520,9 +690,11 @@ Run `./preflight.py` first — it diagnoses most of this and prints the fix.
 
 ### No detections at all
 
-1. Is the current time inside `active_hours`?
+1. What mode is it in? The dashboard's mode pill, or `./preflight.py`. At night,
+   or while `establishing`/`switching`, no model runs and nothing is classified
+   as a heron by design — look in To Triage for "motion" clips instead
 2. Lower `motion.sensitivity` (try `2000`)
-3. Lower `ai.deter_threshold` toward `0.75` (accepting more false positives, since
+3. Lower `modes.day.deter_threshold` toward `0.75` (accepting more false positives, since
    at 0.75 recall on stock positives is 0.84 vs 0.41 at the shipped 0.90 — but 18%
    of your bench footage also clears that bar, so the deterrent will fire more)
 4. Upload a clip via the dashboard's Test Upload to confirm inference works
@@ -581,7 +753,10 @@ df -h /home                       # on Coral this is a separate 2 GB partition
 du -sh media/* | sort -h | tail
 ```
 
-Lower `storage.max_media_gb`. The cap is enforced every five minutes.
+Lower `storage.max_media_gb` and `storage.max_motion_gb`; `./preflight.py`
+fails if together they cannot fit on the filesystem. The caps are enforced every
+five minutes. If `motion/` is the one growing, lengthen
+`modes.ir.cooldown_seconds` — moths in front of IR LEDs are the usual cause.
 
 ---
 

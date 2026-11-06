@@ -94,15 +94,21 @@ nano config.yaml
 - [ ] `ai.target: cpu` — **use `cpu` on the Coral too.** The `edgetpu` model
       detects nothing (see README, "Edge TPU status")
 - [ ] `system.camera_device_id: 0` — check with `ls /dev/video*`
-- [ ] `system.active_hours` covers when herons actually visit
-- [ ] `storage.max_media_gb: 1.0` — lower it if the card is small.
-      **On Coral, check `df -h /home`: it is a separate 2 GB partition**
+- [ ] No `system.active_hours` — it is gone; the system runs round the clock and
+      branches on frame type. A leftover block is a startup error.
+- [ ] `modes.<mode>.deterrent` — the **only** switch for the sound, and `false`
+      in every mode as shipped. Turning the sound on is `modes.day.deterrent:
+      true`; a motion-only mode (`model: null`) with `deterrent: true` refuses
+      to start
+- [ ] `storage.max_media_gb` + `storage.max_motion_gb` (15 + 5 GB) — sized for
+      a Pi's card. **On Coral, check `df -h /home`: it is a separate 2 GB
+      partition — bring them down to ~0.7 + 0.3.** Preflight fails if they
+      cannot fit
 - [ ] `alert.sms_enabled: false` unless you have done step 5
-- [ ] `collect_mode.enabled` — `false` for a working deterrent. Set `true` only
-      for a data-collection run, and read the storage warning in step 10 first:
-      it records everything above `record_threshold` (0.30), which on a bench is
-      near-continuous. `collect_mode.deterrent_enabled: false` silences the
-      sound independently, so you can gather footage without the bang.
+- [ ] `collect_mode.enabled` — `false` normally. Set `true` only for a
+      data-collection run, and read the storage warning in step 10 first: it
+      records every day event above `modes.day.record_threshold` (0.30), which
+      on a bench is near-continuous. It does **not** affect the deterrent.
 
 ---
 
@@ -187,29 +193,38 @@ Expect, within a couple of seconds:
 
 ```
 Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3 float32 | output=1x5x8400
+Mode day: model=heron deter=0.9 alert=0.95 record=0.3, silent, cooldown 10s
+Mode ir: motion-only (no model), silent, cooldown 45s
+Mode dark: motion-only (no model), silent, cooldown 45s
 Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9 | iou=0.45
-Thresholds: deter=0.9  alert=0.95  vote=3/5  anchor_floor=0.9
+day: vote=3/5 anchor_floor=0.9
 Loaded 1 deterrent sound(s): startle_default.wav
 Camera 0 open at 640x480
 System started successfully
+Frame type: startup -> day                              <- ~2 s later; or ir / dark at night
+Mode is now day: model=heron ...
 ```
 
-With `collect_mode.enabled: true` the last two of those change, and one more
-line appears — this is correct, not a fault:
+With `collect_mode.enabled: true` the detector's floor drops — this is
+correct, not a fault:
 
 ```
 Detector ready: ... | confidence>=0.3 | iou=0.45          <- anchor floor drops to record_threshold
-Thresholds: deter=0.9  alert=0.95  vote=3/5  anchor_floor=0.3
-COLLECT MODE ON: recording everything above 0.3, deterrent DISABLED
+day: vote=3/5 anchor_floor=0.3
+COLLECT MODE ON: recording day events above 0.3
 ```
 
-- [ ] Open `http://<board-ip>:5000` — dashboard loads, live feed moves
-- [ ] Walk in front of the camera → journal shows
-      `Motion detected - inferring on trigger frame`
-- [ ] Press **Trigger Deterrent** on the dashboard → you hear the sound.
-      **Silent on a collect run:** with `collect_mode.deterrent_enabled: false`
-      this logs `Deterrent SILENCED` and plays nothing. That is the flag
-      working, not a broken speaker.
+- [ ] Open `http://<board-ip>:5000` — dashboard loads, live feed moves, the
+      mode pill shows Day (or IR night / Dark night)
+- [ ] Walk in front of the camera → journal shows `Motion detected (day)`.
+      At night it shows `Motion detected (ir)` then
+      `Motion (motion-only mode, raw=ir) — recording unclassified`, and no
+      inference runs
+- [ ] Press **Test Speaker** on the dashboard → you hear the sound. This is a
+      manual test and plays in every mode. Automatic firing is governed only
+      by `modes.<mode>.deterrent`; when that is `false` a confident heron logs
+      `Deterrent SILENCED (modes.day.deterrent=false)` and is still recorded
+      and alerted
 - [ ] Optional, strongest test: upload a heron clip via **Test Upload**
 
 **Two traps in the Test Upload check.** It is a weaker test than it looks:
@@ -296,11 +311,13 @@ du -sh media/*
 
 | Symptom | Fix |
 |---|---|
-| Deterrent firing at nothing | Check `media/heron/` first — at `deter_threshold=0.90` no bench frame clears the bar, so if it is firing something is genuinely triggering. If it truly is nothing, raise `deter_threshold` further. |
+| Deterrent firing at nothing | Check `media/heron/` first — at `modes.day.deter_threshold=0.90` no bench frame clears the bar, so if it is firing something is genuinely triggering. If it truly is nothing, raise it further. |
 | Lots of motion, no detections | Lower `motion.sensitivity` to `2000` |
 | Hundreds of "unknown" alerts | Raise `motion.sensitivity`; wind and shadow trigger it |
-| Herons ignored | Lower `deter_threshold` toward `0.75` (raises recall on stock positives 0.41 → 0.84, but lets 18% of bench frames through); move the camera closer |
-| Card filling | Lower `storage.max_media_gb` |
+| Herons ignored | Check the mode pill first — at night no model runs by design. By day, lower `modes.day.deter_threshold` toward `0.75` (raises recall on stock positives 0.41 → 0.84, but lets 18% of bench frames through); move the camera closer |
+| Stuck in establishing / switching | Frames are ambiguous. Run `./preflight.py` and compare its chroma/luma against `frame_type:` thresholds |
+| Hundreds of night "motion" clips | Moths at the IR LEDs or rain on the housing. Raise `modes.ir.cooldown_seconds`, or `motion.sensitivity` |
+| Card filling | Lower `storage.max_media_gb` / `storage.max_motion_gb` |
 
 Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
 
@@ -319,7 +336,29 @@ Measured on the Coral bench (640x480, 5 fps, 5 s clips, `record_threshold` 0.30)
 | Observed, ordinary room activity | ~80 | ~12 MB/h | **~3.8 days** |
 | Saturated, continuous motion (10 s cooldown) | ~225 | ~33 MB/h | **~32 hours** |
 
-Mean clip is ~147 KB. **Offload before that window closes.** From your laptop:
+Mean clip is ~147 KB. **Offload before that window closes.**
+
+#### Round the clock, on the Pi
+
+Running 24 hours instead of a 06:00–20:00 window adds the night, and the night
+is where volume becomes unpredictable: with no model to filter it, every moth in
+front of the IR LEDs and every raindrop on the housing is a clip. Daylight clips
+on the Coral averaged ~147 KB (the bench reference clips run ~220 KB; IR clips
+are untested until the camera arrives — assume ~200 KB). Worst cases, from the
+cooldowns:
+
+| Pool (cap) | Worst case | Fills its cap in |
+|---|---|---|
+| motion (5 GB), 45 s night cooldown, 15 h November night | 1,200 clips ≈ 240 MB/night | ~3 weeks |
+| classified (15 GB), 10 s day cooldown, 9 h saturated | 3,240 clips ≈ 650 MB/day | ~3 weeks |
+| classified, ordinary activity (~80 clips/h, 9 h) | ≈ 145 MB/day | ~3 months |
+
+The caps never let the card fill; what they cost you is the **oldest footage in
+that pool**. The two pools are separate, so a moth night only ever evicts older
+night clips — never daylight. Offload **weekly** and nothing you want can reach
+a cap even at the worst case; monthly is fine on an ordinary pond. The
+`Size cap: deleted N oldest file(s) ... from the motion pool` log line is the
+warning that you left it too long. From your laptop:
 
 ```bash
 mkdir -p ~/heron_board_pull
@@ -349,16 +388,20 @@ Two warnings:
 - macOS ships **openrsync**, not GNU rsync. `--remove-source-files`,
   `--stats` and `--prune-empty-dirs` all work; `--info=stats2` does not.
 
-`media/labeled/` is exempt from both the age sweep and the size cap by design
-(`CURATED_MEDIA_SUBDIRS`), so hand-labelled training data is never deleted —
-it only ever triggers the `max_labeled_gb` warning.
+`media/labeled/` — every directory under it, including `day/`, `ir/` and
+`dark/` — is exempt from the age sweep and both size caps by design: curated
+files are found recursively under `labeled/`, and no clip pool may live there
+(an import-time assertion and `tests/test_media_store.py` both enforce it).
+Hand-labelled training data is never deleted; it only ever triggers the
+`max_labeled_gb` warning. Train from **one** of `labeled/day`, `labeled/ir`,
+`labeled/dark` — never a mixture.
 
 The most valuable thing you can collect is **negative examples** from your own
 pond — the model was trained on ~180 close-up herons with no negatives, which is
 why non-heron frames score as high as **0.89**: measured on real camera footage,
 18% of frames containing no heron at all still clear a 0.75 threshold. `deter=0.90`
 holds them out today, but two false-positive tails a hair higher would put the
-sound firing at nothing. Label pond footage in the dashboard's Unclassified
+sound firing at nothing. Label pond footage in the dashboard's To Triage
 panel, or turn on `collect_mode` to have the device gather borderline clips.
 
 ---
@@ -372,13 +415,10 @@ sudo systemctl stop heron-deterrent
 sudo systemctl disable heron-deterrent      # also stop it starting at boot
 ```
 
-**Deterrent firing all night:** stop the service as above, or narrow
-`system.active_hours` and restart. To keep detection but silence it, move the
-WAVs aside — but note the system then **refuses to start**, deliberately:
-
-```bash
-mkdir -p ~/sounds_disabled && mv sounds/*.wav ~/sounds_disabled/
-```
+**Deterrent firing when it should not:** set `deterrent: false` on the mode
+in question (it ships `false` everywhere) and restart. Detection, recording and
+alerts carry on; only the sound stops. Motion-only night modes cannot fire it at
+all — that combination refuses to start.
 
 **Bad code or config — go back to the last known-good commit:**
 
