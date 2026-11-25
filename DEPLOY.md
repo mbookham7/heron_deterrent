@@ -407,7 +407,12 @@ journalctl -u heron-deterrent --since today | grep -c 'Motion detected'
 df -h /
 du -sh media/*
 vcgencmd measure_temp; vcgencmd get_throttled     # in the box now — this is the reading that matters
+tail -20 ~/heron_temps.csv                        # the history, if the temperature logger is installed
 ```
+
+The temperature logger is a five-minute cron job for `pi` — setup in README,
+"The filter-house enclosure". Install it **before** sealing the box, so the
+first hours in there are on record.
 
 | Symptom | Fix |
 |---|---|

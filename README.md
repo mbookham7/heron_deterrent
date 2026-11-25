@@ -297,6 +297,24 @@ vcgencmd measure_temp; vcgencmd get_throttled    # throttled=0x0 is what you wan
 `preflight` reports both. A throttling board looks exactly like "inference got
 slower for no reason".
 
+A single reading only catches one moment. To get the whole history — overnight,
+a warm afternoon, the day the box was closed — log it every five minutes with a
+cron job for `pi` (no sudo; installed on the build Pi and confirmed writing):
+
+```bash
+crontab -l     # check pi has no crontab first — the next line replaces it
+cat > /tmp/heron.cron <<"EOF"
+*/5 * * * * echo "$(date "+\%F \%T"),$(vcgencmd measure_temp | cut -d= -f2),$(vcgencmd get_throttled | cut -d= -f2)" >> /home/pi/heron_temps.csv
+EOF
+crontab /tmp/heron.cron && rm /tmp/heron.cron
+```
+
+Each line is `time,temperature,throttle state`, e.g.
+`2026-11-25 18:45:01,57.4'C,0x0`. Anything but `0x0` in the last column means
+it has throttled or seen under-voltage. The `\%` escapes are needed: cron treats
+a bare `%` as a newline. Remove it with `crontab -r`. At one ~35-byte line every
+five minutes the file grows about 4 MB a year.
+
 ---
 
 ## Camera and mounting
