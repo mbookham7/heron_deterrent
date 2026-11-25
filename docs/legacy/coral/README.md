@@ -76,13 +76,13 @@ model, not just that the file loads.
 - **The box units.** The detector's letterbox undo assumes normalised boxes,
   which is right for the CPU model. A TPU model emitting pixels would need
   scaling by `1/input_w` before the undo in `heron_deterrent` — not done.
-- **A runtime on the Pi.** `ai/model_loader.py` builds the Edge TPU interpreter
-  from `tflite_runtime` only. On Raspberry Pi OS 13 (Python 3.13),
-  `pip install tflite-runtime` finds no versions at all — so **`ai.target:
-  edgetpu` cannot load on the current Pi** with or without a Coral USB
-  Accelerator. Using one would need the loader to take `load_delegate` from
-  `ai_edge_litert` as well, plus a `libedgetpu` that installs on Trixie. Neither
-  has been tried.
+- **A `libedgetpu` for the Pi.** On Raspberry Pi OS 13 (Python 3.13)
+  `tflite-runtime` does not install, so the loader falls back to
+  `ai_edge_litert`'s `load_delegate`. On the build Pi, `ai.target: edgetpu`
+  then fails at the delegate: `libedgetpu.so.1: cannot open shared object
+  file`. **`ai.target: edgetpu` cannot load on the current Pi** until a
+  `libedgetpu` exists there that works with LiteRT. Google's is archived;
+  community builds exist but none has been tried.
 
 ### Exporting for the Edge TPU
 

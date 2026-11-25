@@ -91,23 +91,29 @@ class ModelLoader:
         return self._build_edge_tpu() if self.use_edge_tpu else self._build_cpu()
 
     def _build_edge_tpu(self):
+        # Same order as _build_cpu. On a Pi (Python 3.13) only ai_edge_litert
+        # exists; whether any libedgetpu works with it there is untested.
         try:
             from tflite_runtime.interpreter import Interpreter, load_delegate
-        except ImportError as e:
-            raise ModelLoadError(
-                "ai.target is 'edgetpu' but tflite_runtime is not installed.\n"
-                "  On Mendel Linux:  sudo apt-get install -y python3-pycoral libedgetpu1-std\n"
-                "  No Edge TPU?      set ai.target: cpu in config.yaml"
-            ) from e
+        except ImportError:
+            try:
+                from ai_edge_litert.interpreter import Interpreter, load_delegate
+            except ImportError as e:
+                raise ModelLoadError(
+                    "ai.target is 'edgetpu' but no TFLite runtime is installed.\n"
+                    "  On Mendel Linux:  sudo apt-get install -y python3-pycoral libedgetpu1-std\n"
+                    "  No Edge TPU?      set ai.target: cpu in config.yaml"
+                ) from e
 
         try:
             delegate = load_delegate(EDGETPU_LIB)
         except Exception as e:
             raise ModelLoadError(
                 f"ai.target is 'edgetpu' but the delegate ({EDGETPU_LIB}) would not load.\n"
-                f"  Is the TPU visible?   lspci -nn | grep 089a\n"
-                f"  Is the driver up?     dmesg | grep apex\n"
-                f"  Reinstall runtime:    sudo apt-get install --reinstall libedgetpu1-std\n"
+                f"  Coral Dev Board:      lspci -nn | grep 089a; dmesg | grep apex\n"
+                f"                        sudo apt-get install --reinstall libedgetpu1-std\n"
+                f"  Raspberry Pi:         no libedgetpu has been found that works here —\n"
+                f"                        see docs/legacy/coral/README.md\n"
                 f"  No Edge TPU?          set ai.target: cpu in config.yaml\n"
                 f"  Underlying error: {e}"
             ) from e

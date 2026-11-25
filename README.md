@@ -1001,8 +1001,9 @@ dataset lacks — see "Mounting distance".
 ## Edge TPU status
 
 **Not usable today, and not relevant to the Pi.** The compiled Edge TPU model
-detects nothing — quantisation crushed its class scores — and the loader's Edge
-TPU path needs `tflite_runtime`, which does not install on the Pi's Python 3.13.
+detects nothing — quantisation crushed its class scores — and on the Pi the
+Edge TPU path stops at `libedgetpu.so.1: cannot open shared object file`: no
+Edge TPU library has been found that works there.
 Two known workarounds for the model are **untried, not unavailable**. The full
 diagnosis, and why a Coral USB Accelerator on this Pi would not work as things
 stand, is in [docs/legacy/coral/README.md](docs/legacy/coral/README.md).
