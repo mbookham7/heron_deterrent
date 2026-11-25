@@ -1,11 +1,33 @@
 # Heron Deterrent System
 
-An edge AI system that watches a live camera feed, detects herons with a YOLOv8
-TFLite model, plays a deterrent sound to scare them away, and raises SMS and
-MQTT alerts — all running locally on a Coral Dev Board or a Raspberry Pi 4.
+An edge AI system that watches a pond, detects herons with a YOLOv8 TFLite
+model, plays a deterrent sound to scare them away, and raises SMS and MQTT
+alerts — all running locally on a **Raspberry Pi 4**, in a sealed box inside the
+pond filter house, with an IP66 USB camera. It runs round the clock, in
+different modes by day and by night.
 
 **Deploying at the pond? Go straight to [DEPLOY.md](DEPLOY.md).** This file is
-the reference; that one is the checklist.
+the reference; that one is the checklist. Building a fresh Pi from a blank card
+is [docs/raspberry_pi4_setup.md](docs/raspberry_pi4_setup.md).
+
+> **Coming from the Coral Dev Board?** It is legacy now — Google has archived
+> the Coral software, and the Pi runs the same model about 3× faster. Its notes
+> live in [docs/legacy/coral/](docs/legacy/coral/README.md).
+
+### What has and has not been verified
+
+Every Pi command in these docs ran on the build Pi (Raspberry Pi 4 Model B
+Rev 1.5, 8 GB, Raspberry Pi OS 13 "Trixie", Python 3.13.5) on 2026-11-25.
+Some things could not be checked that day, and the text says so wherever they
+come up rather than stating them as fact. The main ones:
+
+- **Nothing has been measured inside the sealed box** — every temperature here
+  is from the bench, in open air.
+- **Nothing has been measured at the pond** — no real heron, no outdoor scene,
+  no night.
+- **The camera specification is the vendor's**, not measured. In particular
+  whether the 96° field of view is horizontal or diagonal, and whether 640×480
+  crops or squashes the sensor, are open — see "Camera and mounting".
 
 ---
 
@@ -31,13 +53,17 @@ Camera (5 fps) → Frame type (day / IR / dark / unsettled) → Motion detection
 The ordering matters. Inference runs on the frame that triggered the motion, so
 the speaker fires about **1 second** after the bird appears. An earlier version
 captured a five-second clip first and took **9.6 seconds** — by which time the
-heron had usually left.
+heron had usually left. (Both figures were measured on the Coral, where
+inference took 920 ms. The Pi's inference is about 600 ms faster, so it should
+be quicker still, but motion-to-sound has not been re-measured on the Pi.)
 
 If the trigger frame is inconclusive, the system falls back to capturing a clip
 and scoring five key frames, so a bird caught mid-wingbeat is not written off.
 
-The system runs **round the clock**. There is no time-of-day window: what it does
-depends on what kind of image the camera is producing, below.
+The system runs **round the clock**. There is no time-of-day window — the old
+`system.active_hours` key is gone, and leaving it in `config.yaml` is a startup
+error. What it does depends on what kind of image the camera is producing,
+below.
 
 ## Day and night
 
@@ -79,8 +105,8 @@ Two rules follow, and the code enforces both:
 Until real IR heron footage exists to train on, **night runs motion-only**: any
 movement records a clip, labelled "motion — unclassified", and raises a
 dashboard alert. At four in the morning, movement at the pond is very probably
-wildlife, so that is a reasonable signal on its own — and it saves running a
-~1 s inference on every moth.
+wildlife, so that is a reasonable signal on its own — and it saves running an
+inference on every moth.
 
 ### How the frame type is decided
 
@@ -103,6 +129,10 @@ Until then the state is `establishing` (just started) or `switching`. Motion in
 those windows is **still recorded**, unclassified, because dawn is exactly when
 the bird turns up; it just is not judged by any model, since nobody knows which
 one applies.
+
+On the Pi, settling took about 2 s after a service restart but **26 s after a
+cold boot** — most likely the camera's auto-exposure finding its level. Motion
+in that window is recorded as `establishing`, as designed.
 
 When labelling, the dashboard says which training set the current frame goes
 into. That decision uses each frame's type **as recorded live when it was
@@ -132,15 +162,20 @@ on it — a cheap way to measure how badly it transfers.
 
 ## Measured performance
 
-All figures measured on a Coral Dev Board (Mendel 5, quad Cortex-A53), CPU
-inference, 640×640 model:
+On the build Pi (Raspberry Pi 4, 8 GB, Raspberry Pi OS 13, LiteRT 2.4.0 with
+its XNNPACK CPU delegate, 4 threads, 640×640 model), on the bench:
 
-| Metric | Value |
-|---|---|
-| Inference | 920 ms/frame |
-| Motion → deterrent sound | **1.02 s** |
-| Saved clip size | 117 KB (5 s, 640×480) |
-| Resident memory | ~110 MB |
+| Metric | Value | How it was measured |
+|---|---|---|
+| Inference | **314 ms** median (313–343) | 20 runs after 3 warm-ups, on random input — a fair timing, but it says nothing about the scores |
+| Motion → deterrent sound | **not measured on the Pi** | 1.02 s on the Coral |
+| Saved clip size | 170 KB mean (5 s, 640×480, 5 fps, H.264) | 16 indoor clips on the bench; outdoor and IR clips will differ |
+| Resident memory | 206 MB | The running service, `ps` RSS |
+| CPU, idle pond | ~55% of one core | The running service with no inference: motion detection, frame typing, dashboard |
+
+For comparison, the Coral Dev Board (Mendel 5, quad Cortex-A53, CPU inference)
+measured 920 ms per inference, 1.02 s motion-to-sound, 117 KB clips and ~110 MB
+resident — full table in [docs/legacy/coral/](docs/legacy/coral/README.md).
 
 ### Accuracy — read the caveat, and re-derive with the script
 
@@ -165,8 +200,8 @@ Positives are the 44 validation images from `heron-data`, centre-cropped to
 4:3 and scaled to the camera's 640×480. **They are the same stock-photo
 domain as the training set, so they flatter the model and say nothing about
 performance at a pond** — even with the camera simulation applied. Negatives
-are 275 frames of real camera footage from `media/` — an indoor bench test,
-not the deployment scene.
+are 275 frames of real camera footage from `media/` — an indoor bench test on
+the Coral, not the deployment scene.
 
 The single most important fact: **at the shipped `deter_threshold` of 0.90 no
 negative frame clears the bar, but recall on stock positives is 0.41 (18/44).**
@@ -177,36 +212,250 @@ a different threshold. The 0.90 setpoint chooses to miss more than half the
 herons rather than fire the deterrent at nothing, which is the right trade
 for a bang whose false alarm is nearly free.
 
----
-
-## Edge TPU status — read this before buying hardware for it
-
-**The Edge TPU is not currently usable, and it is the model's fault, not the
-board's.** `ai.target: edgetpu` loads and runs at 87 ms/frame, but detects
-nothing: full-integer quantisation destroyed the model's classification head, so
-every one of the 8,400 anchors scores about `1e-5`. The bounding-box outputs also
-come back in pixel units rather than normalised, unlike the CPU model.
-
-The hardware itself is healthy — an older compiled model runs on the same TPU at
-3 ms/frame.
-
-Fixing it requires re-quantising with better calibration and recompiling with
-`edgetpu_compiler`, which only runs on x86-64 Linux. Until someone does that,
-**use `ai.target: cpu` on both boards.** A Coral runs CPU inference perfectly
-well; it is simply not using its accelerator.
+These scores were measured with `tflite-runtime` and TensorFlow; the Pi runs
+the same model file under LiteRT. The output shapes match, but **the scores
+have not been re-derived under LiteRT on the Pi**. They should be identical or
+very close; nobody has checked.
 
 ---
 
 ## Hardware
 
-| Component | Notes |
+| Component | What was built | Notes |
+|---|---|---|
+| Board | Raspberry Pi 4 Model B, 8 GB | The service uses ~210 MB, so a 2 GB board should fit — not tried |
+| OS | Raspberry Pi OS 13 (Trixie), 64-bit | Boot to the console, not the desktop — see "Sound output" |
+| Camera | ELP USBFHD05MT-DL36 | IP66 dome, UVC. See "Camera and mounting" |
+| USB hub | **Powered** hub between Pi and camera | Recommended, not fitted in the bench build. See below |
+| Speaker | **Powered** speaker on the 3.5 mm jack | The jack is line-level; it cannot drive a passive speaker |
+| Storage | microSD; the build used 128 GB | The clip caps (20 GB) need ≥ 32 GB. `preflight` fails if they cannot fit |
+| Power | Official 5 V / 3 A USB-C supply | Under-voltage shows as `throttled=` bits in `vcgencmd get_throttled` |
+| Network | Wi-Fi or Ethernet | Optional — detection works offline |
+
+### Why the camera goes through a powered hub
+
+A Pi 4's USB ports share a power budget of about **1.2 A** across all four. The
+camera's infrared LED array only switches on at night, and an LED array is
+exactly the kind of load that can push a shared budget over. When it does, the
+voltage sags and the camera browns out.
+
+The trap is *when* that happens: **only ever at night**. A brownout drops the
+camera, the code reconnects, frames stop and start — and it looks exactly like a
+bug in the night path, which is the newest and least-tested code. A powered hub
+takes the camera off the Pi's budget and removes the question. If night
+reconnects show up without one, suspect power before code.
+
+The 1.2 A figure is Raspberry Pi's documented limit for all USB ports combined
+(not measured here), and the camera's IR current has not been measured either — so this is a precaution against a plausible
+failure, not a diagnosed one. The bench build had no hub and no night testing.
+
+### The filter-house enclosure
+
+The Pi lives in a **sealed IP-rated box inside the pond filter house**. Two
+choices follow from "sealed":
+
+- **Bare board on standoffs with heatsinks**, not the official Pi case. The
+  official case is closed plastic around a board that runs warm; inside a
+  second sealed box it is a box in a box. Standoffs and heatsinks give the SoC
+  the whole volume of air to shed heat into.
+- **Desiccant in the box.** A filter house is damp, and a sealed box traps
+  whatever moisture was in it when it was closed, which then condenses every
+  cold night.
+
+**How warm it actually gets in there has not been measured.** On the bench, in
+open air: 55 °C idle at boot, ~60–64 °C with the service running, and 68.6 °C
+after only eight seconds of back-to-back inference, never throttled. That is
+already close to `preflight`'s 70 °C warning, before the box adds anything.
+Once it is in the box, check it after a few hours, and again on a warm day:
+
+```bash
+vcgencmd measure_temp; vcgencmd get_throttled    # throttled=0x0 is what you want
+```
+
+`preflight` reports both. A throttling board looks exactly like "inference got
+slower for no reason".
+
+---
+
+## Camera and mounting
+
+### The camera
+
+**ELP USBFHD05MT-DL36.** Vendor specification — not measured here:
+
+| | |
 |---|---|
-| Board | Coral Dev Board or Raspberry Pi 4 (2 GB+) |
-| Camera | USB webcam, 640×480 is plenty |
-| Speaker | Powered USB or 3.5 mm speaker — the deterrent is the whole point |
-| Storage | MicroSD ≥ 16 GB |
-| Power | The board's rated supply; brownouts show up as camera dropouts |
-| Network | Wi-Fi or Ethernet. Optional — detection works offline |
+| Housing | IP66 dome |
+| Sensor | OmniVision OV2710, 1080p |
+| Lens | M12 mount, fixed focus, 3.6 mm |
+| Field of view | 96° horizontal (vendor figure) |
+| Night | Infrared LEDs with an IR-cut filter |
+| Interface | USB, UVC — no driver needed |
+
+What was observed on the Pi: it enumerates as `32e4:9230 HD USB Camera` and
+appears as `/dev/video0`. It offers MJPG and YUYV at 1920×1080, 1280×1024,
+1280×720, 1024×768, 800×600, 640×480 and 320×240. Through OpenCV's default
+(YUYV) it delivers 640×480 at 30 fps but **1920×1080 at only 6 fps** — worth
+knowing before reaching for a higher resolution.
+
+### Capture resolution: 640×480, unchanged
+
+The build kept `system.resolution` at **640×480**. That choice matters more than
+it looks, because **it fixes the image domain of every clip the system ever
+collects** — and those clips are the future training data. Change it later and
+everything already labelled was captured differently.
+
+Reasons to keep 640×480:
+
+- **Every threshold in this README was measured at 640×480.**
+  `tools/camera_sim.py` simulates exactly this camera output, so changing it
+  invalidates the numbers above.
+- **The model sees 640×640 regardless.** A 640×480 frame letterboxes into it
+  with no downscaling. A 1080p frame is shrunk to fit, so the extra pixels never
+  reach the model.
+- **It is cheap**: 30 fps available natively, small clips, little CPU.
+
+**Open question — crop or squash?** The OV2710 is a 16:9 sensor and 640×480 is
+4:3. A UVC camera can get there by *cropping* the sides of the sensor (the image
+stays undistorted, the horizontal view narrows) or by *squashing* the whole
+sensor into 4:3 (full view, but everything is horizontally compressed — and a
+heron is a tall thin bird). Comparing a 1920×1080 frame with a 640×480 frame of
+the same scene settles it. The first attempt on the bench failed — the lens was
+covered — and it has not been repeated. The mounting arithmetic below assumes
+**crop**.
+
+### Mounting distance — and how to redo the sum for another lens
+
+The model can only find a heron at roughly the sizes it was trained on. So the
+question is: at what distance does a heron fill the frame the way the training
+herons did?
+
+**1. How tall the training herons are.** Box heights in all 224 heron labels in
+`heron-data` (train and val), as a fraction of frame height after the same 4:3
+centre-crop the camera simulation applies:
+
+| p10 | p25 | median | p75 | smallest |
+|---|---|---|---|---|
+| 0.30 | 0.42 | 0.59 | 0.77 | 0.16 |
+
+**2. How much scene the camera sees.** Vertical field of view from horizontal,
+for a 16:9 sensor:
+
+```
+vertical = 2 × atan( tan(horizontal / 2) × 9/16 )
+         = 2 × atan( tan(48°) × 0.5625 )
+         = 2 × atan( 0.625 )
+         ≈ 64°
+```
+
+At distance *d*, the visible scene height is `2 × d × tan(32°) ≈ 1.25 × d`.
+
+**3. How big the heron is in the frame.** A standing grey heron is roughly
+**0.9 m** tall (an assumption — hunched, it is less). So its fraction of the
+frame height is `0.9 / (1.25 × d)`, and the distance that gives a fraction *f*
+is:
+
+```
+d ≈ 0.72 / f
+```
+
+| Heron fills | Matches the training set's | Distance |
+|---|---|---|
+| 0.77 of frame height | p75 | ~0.9 m |
+| 0.59 | median | **~1.2 m** |
+| 0.48 | ~p30 | 1.5 m |
+| 0.42 | p25 | ~1.7 m |
+| 0.30 | p10 | ~2.4 m |
+| 0.16 | the single smallest box | 4.5 m |
+
+**So: mount 1.5–4.5 m from where the heron stands, and nearer the bottom of
+that range.** The table is why "nearer the bottom" is not a nicety. At 1.5 m
+the heron is the size of a typical training bird. By 2.4 m it is smaller than
+nine in ten of them. At 4.5 m it matches only the single smallest box in the
+set — that is the edge of what the model has seen, not a comfortable working
+distance. Distant birds were already the ones the model missed on the Coral.
+
+**Three assumptions, any of which moves the answer:**
+
+- **96° is horizontal.** Camera vendors often quote the *diagonal*. If it is
+  diagonal, the vertical view is narrower, herons look bigger, and every
+  distance stretches.
+- **640×480 crops the sensor** (previous section). If it squashes instead, the
+  vertical view is unchanged but the bird is horizontally compressed — a
+  distortion the model never saw in training.
+- **0.9 m heron.**
+
+**Redoing it for a different lens:** replace 96° in step 2 with the new
+horizontal field of view (and 9/16 with the sensor's aspect ratio, if it is
+not 16:9), get the new `scene height ÷ distance` factor, and divide 0.9 by it.
+Then divide by the fractions in step 1.
+
+### The dome: IR washout
+
+**The failure.** At night the image goes milky or washed-out white, sometimes
+with a bright haze or ring. The camera's own IR LEDs are shining back into the
+lens: a dome camera has its LEDs and lens behind the same clear dome, and a
+foam gasket around the lens is what keeps the LED light from leaking sideways
+through the dome material into it.
+
+**The cause** was that gasket **not seated flush against the inside of the
+dome**. Light from the LEDs got past it and reflected straight into the lens.
+(Found on this camera by the owner; not reproduced during the bench build,
+which never ran at night.)
+
+**The diagnostic.** If the image improves with the IR LEDs **off** (or covered),
+it is internal reflection, not the scene. A dirty or wet dome *outside* scatters
+light too, but it stays bad either way.
+
+For the software, this matters twice over. A washed-out frame has no colour, so
+it reads as `ir` (on the bench, a white-out frame measured chroma 0.00 and luma
+255 — classified `ir`). And at night nothing is classified anyway, so a washed-
+out camera produces an endless stream of "motion" clips that look perfectly
+normal in the dashboard list. Look at a night clip, not just the counts.
+
+---
+
+## Sound output
+
+The deterrent plays through `aplay` with **no device named** — whatever ALSA's
+default is. Three things on the Pi make that harder than it sounds, and all
+three were hit on the build:
+
+1. **ALSA's default is HDMI**, not the 3.5 mm jack. Out of the box the
+   deterrent plays to a monitor that is not there.
+2. **The fix has to be system-wide.** The usual per-user file, `~/.asoundrc`,
+   is removed at login by the desktop's volume plugin (`libvolumepulse.so` —
+   it builds that path, and the file vanished across the first reboot). So it
+   works until the first reboot and then silently stops. `setup.sh` writes
+   `/etc/asound.conf` instead, naming the jack as `Headphones`.
+3. **ALSA will not accept the obvious form.** `defaults.pcm.card "Headphones"`
+   is rejected (`card is not a string`), and the error breaks ALSA entirely
+   until the file is removed. The working form is a `pcm.!default` block — see
+   `setup.sh`.
+
+**`preflight` cannot catch this.** Its audio check passes if *any* playback
+device exists and `aplay` returns success — which it does when it plays
+faithfully to HDMI. It also names the first card in the list as the device,
+not the one that played. **You have to listen.** To see which output is
+actually playing:
+
+```bash
+aplay -q sounds/startle_default.wav & sleep 0.4
+head -1 /proc/asound/card*/pcm0p/sub0/status      # the jack is the Headphones card: want RUNNING
+```
+
+**Boot to the console, not the desktop.** It is what removes `~/.asoundrc`, it
+costs heat in a sealed box, and nothing here needs it:
+
+```bash
+sudo systemctl set-default multi-user.target && sudo reboot
+```
+
+**`audio.volume` is not what it looks like.** The app sets it with `amixer` as a
+percentage, and the scale is not linear: on the Pi's jack, the shipped **80% is
+−17.3 dB** and 100% is +4 dB — about 21 dB louder. A deterrent is meant to
+startle, so judge it from where the heron stands, outdoors, and use the
+speaker's own gain as well. (The shipped value has not been changed.)
 
 ---
 
@@ -217,7 +466,7 @@ the inference *backend*, not the board:
 
 ```yaml
 ai:
-  target: cpu                  # "cpu" or "edgetpu" — see Edge TPU status above
+  target: cpu                  # "cpu" or "edgetpu" — see Edge TPU status below
   alert_vote_k: 3              # need k of the last m key frames above alert
   alert_vote_m: 5
   num_threads: 4               # CPU inference only; ignored when target is edgetpu
@@ -258,8 +507,8 @@ it). Re-derive both from footage with `tools/measure_thresholds.py`; see
 
 | `ai.target` | Model file | Backend |
 |---|---|---|
-| `cpu` | `models/heron_cpu_int8.tflite` | `tflite-runtime`, either board |
-| `edgetpu` | `models/heron_edgetpu.tflite` | Edge TPU delegate, Coral only |
+| `cpu` | `models/heron_cpu_int8.tflite` | `ai-edge-litert` on the Pi; `tflite-runtime` on the legacy Coral |
+| `edgetpu` | `models/heron_edgetpu.tflite` | Edge TPU delegate — legacy Coral only, and broken; see below |
 
 There is deliberately **no `model_path` key**. The filename is derived from the
 target, so config cannot point at a file that does not exist. To trial a
@@ -305,13 +554,16 @@ preprocessing convention is enforced by `tests/test_letterbox.py`, which pins it
 against Ultralytics' own `LetterBox` and `scale_boxes`:
 
 ```bash
-python tests/test_letterbox.py         # no pytest needed; runs on the board
+venv/bin/python tests/test_letterbox.py    # no pytest needed; runs on the board
 ```
 
 The two Ultralytics cross-checks skip if `ultralytics` is not installed, which it
 is not on a board. **Run them on a dev machine** (`pip install ultralytics`)
 before trusting a change to preprocessing — without them the file only asserts
 that the code agrees with itself.
+
+The same "squash vs letterbox" question applies one step earlier, at the camera
+— see "Capture resolution" above.
 
 ### Full configuration reference
 
@@ -325,7 +577,7 @@ that the code agrees with itself.
 | `ai.labels` | `{0: heron}` | Must match the model's class count exactly |
 | `alert.sms_enabled` | `false` | Needs `/etc/heron-deterrent.env` (see below) |
 | `alert.sms_throttle_minutes` | `15` | Minimum gap between SMS messages |
-| `audio.volume` | `80` | Percent, applied via `amixer` |
+| `audio.volume` | `80` | Percent, applied via `amixer` before every play. Not linear: 80% is −17.3 dB on the Pi's jack — see "Sound output" |
 | `audio.sound_path` | `./sounds/` | Startup **fails** if this has no `.wav` files |
 | `storage.retention_days` | `365` | Age-based deletion |
 | `storage.max_media_gb` | `15.0` | **Hard size cap** on clips a model looked at (`heron/`, `other/`, `unknown/`). Oldest first |
@@ -336,7 +588,7 @@ that the code agrees with itself.
 | `mqtt.enabled` | `false` | Optional MQTT publishing |
 | `mqtt.broker` | `localhost` | Broker hostname. Connects asynchronously, retries forever |
 | `mqtt.port` | `1883` | Broker port |
-| `frame_type.*` | see `config.yaml` | Thresholds for day/IR/dark. Tune with the numbers `./preflight.py` prints |
+| `frame_type.*` | see `config.yaml` | Thresholds for day/IR/dark. Tune with the numbers `preflight` prints |
 | `modes.<mode>.model` | `heron` / `null` | Registered model name, or `null` = motion-only (no inference) |
 | `modes.<mode>.deter_threshold` | `0.90` (day) | Deterrent fires above this. At 0.90: recall 0.41 (18/44) on stock positives with camera simulation, zero false-positive frames. See "Accuracy" |
 | `modes.<mode>.alert_threshold` | `0.95` (day) | Recording + SMS require this AND `k`-of-`m` voting |
@@ -347,6 +599,7 @@ that the code agrees with itself.
 | `collect_mode.enabled` | `false` | Record borderline day events above `record_threshold`. Does not touch the deterrent |
 | `system.camera_device_id` | `0` | V4L2 device number |
 | `system.frame_rate` | `5` | Capture rate, and the rate clips are written at |
+| `system.resolution` | `640×480` | Fixes the image domain of all collected data — see "Capture resolution" |
 
 ### Why there is a size cap as well as retention
 
@@ -372,8 +625,9 @@ deleting half of an image/annotation pair silently turns a labelled heron into a
 protection is recursive: any directory under `labeled/`, including ones added
 later, is exempt.
 
-> On the Coral, `/home` is a **separate 2 GB partition** and the repo lives
-> there. `df -h /` showing plenty of space is misleading — check `df -h /home`.
+The default caps (15 + 5 GB) are sized for a Pi's card. On the Pi the repo is
+on the root filesystem, so `df -h /` is the right check. (On the legacy Coral
+it was not — see its notes.)
 
 ### Secrets
 
@@ -398,19 +652,27 @@ Then set `alert.sms_enabled: true`. Do **not** put credentials in
 
 If SMS is enabled but the variables are missing, the system logs a warning and
 runs without SMS. Losing alerts is bad; losing the deterrent because alerting is
-misconfigured would be worse.
+misconfigured would be worse. (SMS has never been switched on — there is no
+Twilio account yet — so none of this has been exercised on the Pi.)
 
 ---
 
 ## preflight.py
 
 One command that checks everything before you start the service. Run it on the
-board, from the repo root:
+board, from the repo root, **through the venv**:
 
 ```bash
-./preflight.py                # all checks, plays a deterrent sound
-./preflight.py --skip-audio   # same, but stay quiet
+venv/bin/python preflight.py                # all checks, plays a deterrent sound
+venv/bin/python preflight.py --skip-audio   # same, but stay quiet
 ```
+
+Not `./preflight.py`. Its first line runs the *system* Python, which has none of
+the venv's packages — so on the Pi it reports `[FAIL] model` and
+`[FAIL] camera ... opencv not installed` on a perfectly healthy install.
+(preflight's own fix hints still say `./preflight.py`; ignore that part.)
+
+A real run on the build Pi, with the service running:
 
 ```
 [PASS] config       ai.target=cpu  classes=1
@@ -421,29 +683,35 @@ board, from the repo root:
 [PASS] model        heron: heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
 [skip] edgetpu      ai.target is not 'edgetpu'
 [PASS] sounds       1 file(s), 172 KB: startle_default.wav
-[PASS] audio        device present (...), playback not tested (--skip-audio)
-[PASS] camera       device 0 returned a 640x480 frame
-[PASS] frame type   ir (ir 15 of 15 frames)  chroma 0.31  luma 88.2  -> ir: motion-only ...
-[PASS] video        H.264 available — ...
-[PASS] disk         ...
-[PASS] storage      clip caps 15 GB classified + 5 GB motion = 20 GB on a 58.0 GB filesystem
+[PASS] audio        device present (vc4hdmi0 [vc4-hdmi-0], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]), playback not tested (--skip-audio)
+[skip] camera       device 0 is held by the running heron-deterrent service
+[PASS] video        H.264 available — /usr/bin/ffmpeg with libx264 (preset veryfast)
+[PASS] disk         104.9 GB free of 116.8 GB on / (10% used)
+[PASS] storage      clip caps 15 GB classified + 5 GB motion = 20 GB on a 116.8 GB filesystem
 [PASS] labeled      images by domain: day 0, ir 0, dark 0
-[PASS] database     data/heron.db writable (24 KB)
-[WARN] cpu temp     71.2 C
-       -> Improve cooling: heatsink or fan on the SoC, ...
+[PASS] database     data/heron.db writable (32 KB)
+[PASS] cpu temp     60.4 C  never throttled since boot
 [skip] sms          alert.sms_enabled is false
+
+All 11 checks passed.
 ```
 
-(Illustrative, not a captured run.) Every failure prints the command that fixes
-it. Exit status is 0 only when everything passes, so it can gate a deploy
-script. `[WARN]` lines do not fail the run.
+Note the audio line names `vc4hdmi0` — HDMI — although sound was going to the
+jack: see "Sound output". With the service stopped the camera and frame-type
+checks run too, for 13 checks in all.
+
+Every failure prints the command that fixes it. Exit status is 0 only when
+everything passes, so it can gate a deploy script. `[WARN]` lines do not fail
+the run.
 
 **Frame type** prints the raw chroma (how much colour) and luma (brightness)
 behind its verdict. Run preflight once in daylight and once after dark: the two
 readings should land clearly on either side of the `frame_type:` thresholds. If
 the night reading lands in the dead band, the camera is probably tinting its IR
 frames rather than sending pure black-and-white; raise `mono_max_chroma` above
-the tint.
+the tint. On the bench the ELP read chroma 33.5 / luma 93.5 lit indoors, and
+chroma 5.8 / luma 11 in a dim room (`dark`). It has **not** been read at night
+with its IR on.
 
 **CPU temperature** matters because the Pi lives in a sealed box. A throttling
 board looks exactly like "inference got slower for no reason". It FAILs at 80 °C
@@ -461,6 +729,8 @@ shell to check the SMS leg manually.
 `sounds/` must contain at least one `.wav` file or **the system refuses to
 start**. A silent deterrent is the one failure mode that defeats the whole build
 while looking perfectly healthy, so it is a hard error rather than a warning.
+(A missing file is only one way to be silent — the wrong output device is
+another, and that one starts fine. See "Sound output".)
 
 The repo ships `sounds/startle_default.wav` as a floor — three sharp broadband
 bursts with a 2 ms attack plus a descending screech, generated with the Python
@@ -488,13 +758,21 @@ Things that were specifically hardened for running unattended outdoors:
 - **Logs.** `heron_deterrent.log` rotates at 10 MB × 3 — a 40 MB hard ceiling.
 - **Restart.** systemd restarts on failure after 10 s, giving up after 5 failures
   in 2 minutes so a config error is visible in `systemctl status` rather than
-  looping forever in the journal.
+  looping forever in the journal. Verified on the Pi: after `kill -9` systemd
+  restarted it (a fresh startup in the app log, before the next reboot); after
+  each of two reboots it was running 3–6 s after boot.
+
+**The system journal does not survive a reboot on the Pi.** Raspberry Pi OS
+ships `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`
+(`Storage=volatile`) to spare the SD card, so `journalctl -b -1` finds nothing.
+The app's own `heron_deterrent.log` in the repo directory *does* survive — read
+that for what happened before a crash-and-reboot.
 
 ---
 
 ## Web Dashboard
 
-At `http://<board-ip>:5000`.
+At `http://<pi-ip>:5000`.
 
 | Section | Description |
 |---|---|
@@ -513,7 +791,8 @@ At `http://<board-ip>:5000`.
 > the alert feed gets noisy. Raise `motion.sensitivity` if so.
 
 The Flask server is the development server. That is fine on a private LAN; do
-not expose it to the internet.
+not expose it to the internet. It listens on every interface, so if the Pi has
+both Ethernet and Wi-Fi connected it answers on both addresses.
 
 ### API Reference
 
@@ -532,6 +811,10 @@ not expose it to the internet.
 | POST | `/api/upload-test-video` | Run inference on an uploaded video. Refused unless every key frame is a day frame |
 | GET | `/api/media/<filename>` | Serve a stored clip |
 
+`/api/trigger-deterrent` is the best speaker test there is: it plays through the
+running service itself — its user, its sound device, its volume. From the Pi:
+`curl -s -X POST http://localhost:5000/api/trigger-deterrent`.
+
 > `POST /api/config` exists but is **not safe to call**: it rewrites
 > `config.yaml` from the posted JSON, and since the GET strips the `alert`
 > section, a round trip deletes it along with every comment. The dashboard never
@@ -541,43 +824,48 @@ not expose it to the internet.
 
 ## Installation
 
-Full step-by-step for both boards is in **[DEPLOY.md](DEPLOY.md)**. The short
-version:
+Step by step, every command run on the build Pi, is in
+**[DEPLOY.md](DEPLOY.md)** (and [docs/raspberry_pi4_setup.md](docs/raspberry_pi4_setup.md)
+for flashing the card). The short version, on the Pi:
 
 ```bash
 git clone https://github.com/mbookham7/heron_deterrent.git
 cd heron_deterrent
-./setup.sh                    # system packages, venv, default config
+./setup.sh                    # apt packages, sound to the 3.5 mm jack, venv, LiteRT
 
-# Models are gitignored — copy them in by hand
-cp /path/to/heron_cpu_int8.tflite models/
+# Models are gitignored — copy from your laptop:
+#   scp models/heron_cpu_int8.tflite pi@<pi-ip>:~/heron_deterrent/models/
 
-./preflight.py                # must pass before you start
-START_WEB_UI=true python main.py
+venv/bin/python preflight.py  # must pass before you start
+START_WEB_UI=true venv/bin/python main.py
 ```
 
 ### Python environment notes
 
-**Coral / Mendel 5 (Eagle)** is Debian 10 with **Python 3.7**, OpenCV 4.5.4 and
-numpy 1.19. `requirements.txt` floors are set low deliberately — demanding newer
-versions triggers long source builds on the board for no functional gain.
+**Raspberry Pi OS 13 (Trixie)** is Debian 13 with **Python 3.13**. Use a plain
+venv — no `--system-site-packages`:
 
-The venv **must** be created with `--system-site-packages` on Mendel:
+- **TFLite runtime: `ai-edge-litert`, not `tflite-runtime`.** `pip install
+  tflite-runtime` finds no versions at all for Python 3.13 (neither PyPI nor
+  piwheels has one). `ai-edge-litert` is its successor — TensorFlow Lite was
+  renamed LiteRT — and 2.4.0 installs cleanly and runs the model.
+  `ai/model_loader.py` tries `tflite_runtime` first and `ai_edge_litert`
+  second.
+- **No BLAS package.** numpy's wheel bundles its own OpenBLAS. In particular,
+  `libatlas-base-dev` was removed in Debian 13 and no longer exists — do not
+  hunt for an old `.deb`. `libopenblas-dev` does exist but is not needed.
+- **numpy 2 and OpenCV 5.** `requirements.txt` has floors, not ceilings, so pip
+  resolves current wheels: on the build that was **numpy 2.5.5 and OpenCV
+  5.1** — both major versions newer than this code was written against. 11 of
+  the 12 test files passed on them; the twelfth (`test_camera_sim.py`) needs
+  `pytest`, which is not installed on the board.
+- **`paho-mqtt` is pinned below 2.0**: version 2.x requires a
+  `CallbackAPIVersion` argument that `alerts/mqtt_client.py` does not pass, and
+  the resulting `ValueError` gets swallowed, silently disabling MQTT.
 
-```bash
-python3 -m venv --system-site-packages venv
-```
-
-Mendel's `python3-tflite-runtime` (2.5.0.post1) is version-matched to
-`libedgetpu 16.0`. **Do not `pip install tflite-runtime` on Mendel** — the pip
-build targets a newer TFLite and segfaults when the Edge TPU delegate constructs
-an Interpreter. `setup.sh` handles this automatically.
-
-**Raspberry Pi 4** uses a plain venv plus `pip install tflite-runtime`.
-
-`paho-mqtt` is pinned below 2.0: version 2.x requires a `CallbackAPIVersion`
-argument that `alerts/mqtt_client.py` does not pass, and the resulting
-`ValueError` gets swallowed, silently disabling MQTT.
+The legacy Coral's environment is completely different (Python 3.7, a venv that
+*must* see system packages, and a pip package that segfaults) — see
+[docs/legacy/coral/](docs/legacy/coral/README.md).
 
 ---
 
@@ -588,8 +876,8 @@ heron_deterrent/
 ├── main.py                       # Orchestrator: pipeline, health, cleanup
 ├── preflight.py                  # Pre-start checks — run this at the pond
 ├── config.yaml                   # All configuration
-├── requirements.txt              # Python dependencies
-├── heron-deterrent.service       # Systemd unit
+├── requirements.txt              # Python dependencies (not the TFLite runtime)
+├── heron-deterrent.service       # Systemd unit (runs as pi)
 ├── setup.sh                      # Automated setup
 │
 ├── ai/
@@ -597,7 +885,7 @@ heron_deterrent/
 │   ├── letterbox.py              # The preprocessing convention. Do not bypass
 │   └── model_loader.py           # Target → model file → backend
 │
-├── tests/                        # pytest, or run any file directly on the board
+├── tests/                        # pytest, or run most files directly on the board
 │
 ├── capture/
 │   ├── camera.py                 # Locked, self-healing camera wrapper
@@ -605,7 +893,7 @@ heron_deterrent/
 │   └── motion_detector.py        # MOG2 background subtraction
 │
 ├── deterrent/
-│   └── audio_player.py           # ALSA playback; fails loudly if silent
+│   └── audio_player.py           # ALSA playback; fails loudly if no sounds
 │
 ├── storage/
 │   ├── database.py               # SQLite (thread-safe)
@@ -623,14 +911,15 @@ heron_deterrent/
 │   ├── config_loader.py          # YAML config loader
 │   └── modes.py                  # Per-frame-type modes; validates modes:
 │
+├── tools/                        # Threshold measurement, camera simulation — dev only
 ├── models/                       # *.tflite — gitignored, copy in by hand
 ├── sounds/                       # *.wav — at least one required
 ├── media/                        # Auto-created: heron/ other/ unknown/ motion/ (clips)
 │                                 #   labeled/{day,ir,dark}/{images,labels}/ (training data)
 ├── data/                         # Auto-created: heron.db
 └── docs/
-    ├── coral_dev_board_flash_guide.md
-    └── raspberry_pi4_setup.md
+    ├── raspberry_pi4_setup.md    # Flashing and preparing the Pi
+    └── legacy/coral/             # Coral Dev Board + Edge TPU — end-of-life
 ```
 
 ---
@@ -641,7 +930,7 @@ The dataset and training pipeline live in sibling repositories
 (`heron-data`, `heron-detector`). Current weights:
 `heron-detector/runs/detect/heron_v8_model-4/weights/best.pt` (May 2026).
 
-### Export for CPU (both boards)
+### Export for CPU
 
 ```bash
 yolo export model=best.pt format=tflite int8=True imgsz=640 data=your_data.yaml
@@ -652,53 +941,56 @@ cp best_saved_model/best_int8.tflite models/heron_cpu_int8.tflite
 `int8=True` gives int8 weights with float32 input and output. That is what the
 CPU target expects, and it is ~3.3 MB versus 12 MB for float32.
 
-### Export for Edge TPU (currently broken — see above)
-
-Full-integer quantisation (uint8 in and out) is required by
-`edgetpu_compiler`, and it is that step which destroyed the classification head
-in the current model. If you attempt it, **validate detection scores on real
-images before deploying**, not just that the file loads:
-
-```bash
-edgetpu_compiler -s best_full_integer_quant.tflite
-cp best_full_integer_quant_edgetpu.tflite models/heron_edgetpu.tflite
-```
-
-### A note on resolution
-
-A 320×320 export runs 4× faster (220 ms vs 920 ms on the Coral) but measured
-**10 points lower recall** — 86% vs 96% at threshold 0.75, with distant birds
-worst affected. Since inference now happens on the trigger frame, 640 is fast
-enough, so the resolution is not worth trading.
+The 640 input is deliberate. A 320 export ran 4× faster on the Coral but lost
+recall, worst on distant birds; at 314 ms on the Pi, 640 is affordable. Details
+in [docs/legacy/coral/](docs/legacy/coral/README.md).
 
 ### Collecting more training data
 
 The model was trained on ~180 close-up heron images with **no negative
-examples**, which is why non-heron frames occasionally spike to 0.70. The most
-valuable thing you can add is negatives from your own pond: water ripple,
-ducks, foliage, moving shade. Label them via the dashboard's To Triage panel
-and they are written in YOLO format to `media/labeled/day/`, `ir/` or `dark/` —
-one tree per image domain. **Point a training run at exactly one of them.** The
-pre-split `media/labeled/images|labels` layout is no longer written; preflight
-warns if anything is still there.
+examples**, which is why non-heron frames score as high as **0.894** on real
+camera footage (see "Accuracy"). The most valuable thing you can add is
+negatives from your own pond: water ripple, ducks, foliage, moving shade. Label
+them via the dashboard's To Triage panel and they are written in YOLO format to
+`media/labeled/day/`, `ir/` or `dark/` — one tree per image domain. **Point a
+training run at exactly one of them.** The pre-split
+`media/labeled/images|labels` layout is no longer written; preflight warns if
+anything is still there.
+
+Mounting distance matters here too: the training herons are big in the frame
+(median 0.59 of its height). Footage of distant birds is exactly what the
+dataset lacks — see "Mounting distance".
+
+---
+
+## Edge TPU status
+
+**Not usable today, and not relevant to the Pi.** The compiled Edge TPU model
+detects nothing — quantisation crushed its class scores — and the loader's Edge
+TPU path needs `tflite_runtime`, which does not install on the Pi's Python 3.13.
+Two known workarounds for the model are **untried, not unavailable**. The full
+diagnosis, and why a Coral USB Accelerator on this Pi would not work as things
+stand, is in [docs/legacy/coral/README.md](docs/legacy/coral/README.md).
 
 ---
 
 ## Troubleshooting
 
-Run `./preflight.py` first — it diagnoses most of this and prints the fix.
+Run `venv/bin/python preflight.py` first — it diagnoses most of this and prints
+the fix.
 
 ### No detections at all
 
-1. What mode is it in? The dashboard's mode pill, or `./preflight.py`. At night,
+1. What mode is it in? The dashboard's mode pill, or `preflight`. At night,
    or while `establishing`/`switching`, no model runs and nothing is classified
    as a heron by design — look in To Triage for "motion" clips instead
 2. Lower `motion.sensitivity` (try `2000`)
 3. Lower `modes.day.deter_threshold` toward `0.75` (accepting more false positives, since
    at 0.75 recall on stock positives is 0.84 vs 0.41 at the shipped 0.90 — but 18%
    of your bench footage also clears that bar, so the deterrent will fire more)
-4. Upload a clip via the dashboard's Test Upload to confirm inference works
-5. `sudo journalctl -u heron-deterrent -f`
+4. Is the heron too far away? See "Mounting distance"
+5. Upload a clip via the dashboard's Test Upload to confirm inference works
+6. `sudo journalctl -u heron-deterrent -f`
 
 ### False triggers
 
@@ -716,46 +1008,56 @@ the dashboard.
 ### Model will not load
 
 The error names the fix. Most often the model is missing — they are gitignored,
-so a fresh clone has none. On Mendel, a segfault here means pip's
-`tflite-runtime` is shadowing the system one: `pip uninstall tflite-runtime` and
-ensure the venv has `include-system-site-packages = true`.
+so a fresh clone has none (and no `models/` directory either, until `setup.sh`
+creates it). Otherwise, check the runtime is in the venv:
+
+```bash
+venv/bin/python -c "from ai_edge_litert.interpreter import Interpreter; print('OK')"
+venv/bin/pip install ai-edge-litert      # if not
+```
 
 ### Camera not detected
 
 ```bash
 v4l2-ctl --list-devices
-ls /dev/video*
-sudo fuser -v /dev/video0        # something else holding it?
+ls /dev/video*                    # the Pi has many; the USB camera is normally video0
+sudo fuser -v /dev/video0         # something else holding it?
 ```
 
-Repeated reconnects usually mean USB power, not a bad camera. Use a powered hub.
+Only one process can hold the camera; while the service runs, `preflight` skips
+its camera check rather than fail. Repeated reconnects — especially only at
+night — usually mean USB power, not a bad camera. Use a powered hub.
+
+### Night image washed out
+
+The dome IR reflection — see "The dome: IR washout". Check the foam gasket is
+seated flush against the dome.
 
 ### No sound
 
-```bash
-aplay -l                          # list devices
-speaker-test -t wav -c 2
-amixer                            # find the right control name
-```
-
-### Edge TPU not detected
+`preflight` passing proves very little here — see "Sound output".
 
 ```bash
-lspci -nn | grep 089a
-dmesg | grep apex
-python3 -c "from pycoral.utils.edgetpu import list_edge_tpus; print(list_edge_tpus())"
+aplay -l                                          # the jack is the "Headphones" card
+cat /etc/asound.conf                              # should name Headphones
+aplay -q sounds/startle_default.wav & sleep 0.4; head -1 /proc/asound/card*/pcm0p/sub0/status
+amixer sget PCM                                   # the jack's volume control
 ```
+
+If the jack shows `RUNNING` and you hear nothing, it is the speaker: power, its
+own volume, its lead. Headphones in the jack are the quickest way to split "Pi"
+from "speaker".
 
 ### Disk filling
 
 ```bash
-df -h /home                       # on Coral this is a separate 2 GB partition
+df -h /
 du -sh media/* | sort -h | tail
 ```
 
-Lower `storage.max_media_gb` and `storage.max_motion_gb`; `./preflight.py`
-fails if together they cannot fit on the filesystem. The caps are enforced every
-five minutes. If `motion/` is the one growing, lengthen
+Lower `storage.max_media_gb` and `storage.max_motion_gb`; `preflight` fails if
+together they cannot fit on the filesystem. The caps are enforced every five
+minutes. If `motion/` is the one growing, lengthen
 `modes.ir.cooldown_seconds` — moths in front of IR LEDs are the usual cause.
 
 ---

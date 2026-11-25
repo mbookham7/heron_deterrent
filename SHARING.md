@@ -16,7 +16,7 @@ what the deployed device actually sees:
 
 `camera_sim` lives under `tools/` here, not under `ai/`, because the deployed
 device has a camera — it never simulates one. Nothing in `tools/` ships to
-the Coral or the Pi.
+the Pi.
 
 `letterbox` lives under `ai/` because it IS part of the runtime path — the
 detector on-device calls it on every frame.
