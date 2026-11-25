@@ -152,8 +152,8 @@ if [ "$IS_RASPI" = true ]; then
     fi
     echo "Pi tips:"
     echo "  - Camera: v4l2-ctl --list-devices"
-    echo "  - Sound:  preflight plays the deterrent — listen for it. It passes on any"
-    echo "            device that exists, so it cannot tell you the speaker is silent"
+    echo "  - Sound:  preflight plays the deterrent and fails if it goes to HDMI — but"
+    echo "            only your ears can tell the speaker is powered and turned up"
     echo "  - Heat:   vcgencmd measure_temp; vcgencmd get_throttled   # want throttled=0x0"
     echo ""
 fi

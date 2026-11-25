@@ -208,12 +208,11 @@ and then reports, on a perfectly healthy install:
 [FAIL] camera       opencv not installed
 ```
 
-(preflight's own fix hints still say `./preflight.py` — ignore that part.)
-
-**Listen for the speaker.** The audio check plays a real WAV. **It passes even
-when the sound is going to HDMI**, and it names the first card in the list
-(`vc4hdmi0`) rather than the one that played — so its PASS proves nothing about
-the speaker. Only your ears do. To see which output actually played:
+**Listen for the speaker.** The audio check plays a real WAV, watches which
+output plays it, and **FAILs if it went to HDMI** — the line should name
+`bcm2835 Headphones`, the 3.5 mm jack. But a PASS only proves the sound left
+the jack: whether the speaker is powered, turned up and connected, only your
+ears can tell. To see which output played by hand:
 
 ```bash
 aplay -q sounds/startle_default.wav & sleep 0.4

@@ -4,8 +4,9 @@
 # ai.target is the ONLY hardware switch. It names the inference
 # BACKEND, not the board — a Coral runs "cpu" perfectly well:
 #
-#   cpu     -> models/heron_cpu_int8.tflite  (tflite-runtime, either board)
-#   edgetpu -> models/heron_edgetpu.tflite   (Edge TPU delegate, Coral only)
+#   cpu     -> models/heron_cpu_int8.tflite  (ai-edge-litert on the Pi;
+#                                             tflite-runtime on the legacy Coral)
+#   edgetpu -> models/heron_edgetpu.tflite   (Edge TPU delegate, legacy Coral only)
 #
 # Use "cpu" today. The compiled Edge TPU model detects nothing —
 # full-integer quantisation destroyed its classification head, so

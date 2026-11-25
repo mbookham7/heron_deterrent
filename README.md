@@ -465,11 +465,15 @@ three were hit on the build:
    until the file is removed. The working form is a `pcm.!default` block — see
    `setup.sh`.
 
-**`preflight` cannot catch this.** Its audio check passes if *any* playback
-device exists and `aplay` returns success — which it does when it plays
-faithfully to HDMI. It also names the first card in the list as the device,
-not the one that played. **You have to listen.** To see which output is
-actually playing:
+**`preflight` now catches the routing, not the speaker.** Its audio check
+watches which card is actually playing and **FAILs if it is HDMI** — with
+`--skip-audio` it plays one second of silence to find out. (It used to pass
+whenever `aplay` succeeded, which it does when playing faithfully to HDMI, and
+named the first card in the list rather than the one that played.) What it
+still cannot know is whether the speaker on the jack is powered, turned up and
+connected: on the build, the jack was proven working with headphones while
+the speaker was silent. **You still have to listen.** To see which output is
+playing by hand:
 
 ```bash
 aplay -q sounds/startle_default.wav & sleep 0.4
@@ -703,7 +707,6 @@ venv/bin/python preflight.py --skip-audio   # same, but stay quiet
 Not `./preflight.py`. Its first line runs the *system* Python, which has none of
 the venv's packages — so on the Pi it reports `[FAIL] model` and
 `[FAIL] camera ... opencv not installed` on a perfectly healthy install.
-(preflight's own fix hints still say `./preflight.py`; ignore that part.)
 
 A real run on the build Pi, with the service running:
 
@@ -716,22 +719,26 @@ A real run on the build Pi, with the service running:
 [PASS] model        heron: heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
 [skip] edgetpu      ai.target is not 'edgetpu'
 [PASS] sounds       1 file(s), 172 KB: startle_default.wav
-[PASS] audio        device present (vc4hdmi0 [vc4-hdmi-0], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]), playback not tested (--skip-audio)
+[PASS] audio        default output is bcm2835 Headphones; deterrent not played (--skip-audio)
 [skip] camera       device 0 is held by the running heron-deterrent service
+       -> That is expected. To test the device itself:
+       ->   sudo systemctl stop heron-deterrent && venv/bin/python preflight.py
+       -> Or check the live feed and frame type: curl -s localhost:5000/api/system-status
 [PASS] video        H.264 available — /usr/bin/ffmpeg with libx264 (preset veryfast)
 [PASS] disk         104.9 GB free of 116.8 GB on / (10% used)
 [PASS] storage      clip caps 15 GB classified + 5 GB motion = 20 GB on a 116.8 GB filesystem
 [PASS] labeled      images by domain: day 0, ir 0, dark 0
-[PASS] database     data/heron.db writable (32 KB)
-[PASS] cpu temp     60.4 C  never throttled since boot
-[skip] sms          alert.sms_enabled is false
+[PASS] database     data/heron.db writable (8 KB)
+[PASS] cpu temp     60.9 C  never throttled since boot
+[skip] sms         alert.sms_enabled is false
 
 All 11 checks passed.
 ```
 
-Note the audio line names `vc4hdmi0` — HDMI — although sound was going to the
-jack: see "Sound output". With the service stopped the camera and frame-type
-checks run too, for 13 checks in all.
+`bcm2835 Headphones` is the 3.5 mm jack. Pointed at HDMI instead, the same
+check reports `[FAIL] audio  sound goes to HDMI (vc4-hdmi-0), not the speaker`
+with the fix. With the service stopped the camera and frame-type checks run
+too, for 13 checks in all.
 
 Every failure prints the command that fixes it. Exit status is 0 only when
 everything passes, so it can gate a deploy script. `[WARN]` lines do not fail
@@ -1071,7 +1078,8 @@ seated flush against the dome.
 
 ### No sound
 
-`preflight` passing proves very little here — see "Sound output".
+`preflight` fails if sound is going to HDMI, but its PASS cannot tell you the
+speaker is powered and turned up — see "Sound output".
 
 ```bash
 aplay -l                                          # the jack is the "Headphones" card

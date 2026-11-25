@@ -206,8 +206,9 @@ ribbon-cable Pi Camera Module. A USB camera needs neither.)
 ### Silent speaker
 
 See README, "Sound output", and DEPLOY step 6. In short: ALSA defaults to HDMI;
-`/etc/asound.conf` must name the `Headphones` card; `preflight` cannot tell;
-headphones in the jack tell you in seconds.
+`/etc/asound.conf` must name the `Headphones` card; `preflight` FAILs if sound
+goes to HDMI but cannot hear the speaker; headphones in the jack split "Pi"
+from "speaker" in seconds.
 
 ### "What happened before it rebooted?"
 
