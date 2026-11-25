@@ -4,14 +4,20 @@
 #
 # The TFLite runtime is NOT listed here — it is target-specific:
 #
-#   Coral Dev Board  sudo apt-get install -y python3-pycoral libedgetpu1-std
+#   Raspberry Pi 4   pip install ai-edge-litert       (setup.sh does this)
+#                    tflite-runtime has no wheel for Python 3.13, which
+#                    Raspberry Pi OS 13 (Trixie) ships; ai-edge-litert is
+#                    its successor after TFLite was renamed LiteRT.
+#   Coral (legacy)   sudo apt-get install -y python3-pycoral libedgetpu1-std
 #                    (Mendel 5 also ships python3-tflite-runtime 2.5.0)
-#   Raspberry Pi 4   pip install tflite-runtime
 #
-# Floors are deliberately low. Mendel 5 (Eagle) is Debian 10 with
-# Python 3.7, and its working set is numpy 1.19 / OpenCV 4.5.4 /
-# PyYAML 5.4. Demanding newer versions forces long source builds on
-# the board for no functional gain — nothing here needs them.
+# Floors only, no ceilings. On the Pi, pip resolves these to current
+# wheels — on 2026-11-25 that was numpy 2.5.5 and OpenCV 5.1, and 11 of
+# the 12 test files passed on them (the 12th, test_camera_sim.py, needs
+# pytest, which is not installed on the board). The floors are as low as they are because
+# they were set for the legacy Coral (Mendel 5: Debian 10, Python 3.7,
+# numpy 1.19, OpenCV 4.5.4), where demanding newer versions forced long
+# source builds. They are harmless on the Pi, so they stay.
 #
 opencv-python-headless>=4.5.4
 numpy>=1.16.0

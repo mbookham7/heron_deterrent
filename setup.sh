@@ -3,12 +3,13 @@
 echo "=== Heron Deterrent System Setup ==="
 echo ""
 
-# Detect platform
+# Detect platform. The Raspberry Pi 4 is the target; anything else is assumed
+# to be the legacy Coral Dev Board (Mendel) — see docs/legacy/coral/README.md.
 if grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null; then
     echo "Detected: Raspberry Pi"
     IS_RASPI=true
 else
-    echo "Detected: Non-Raspberry Pi Linux"
+    echo "Detected: not a Raspberry Pi — assuming legacy Coral/Mendel"
     IS_RASPI=false
 fi
 
@@ -18,35 +19,59 @@ echo "Updating system packages..."
 sudo apt-get update
 
 # Install system dependencies
+#
+# Deliberately short. numpy and OpenCV come from pip as wheels that bundle their
+# own libraries (numpy carries its own OpenBLAS), so there is no BLAS package
+# here. libatlas-base-dev in particular no longer exists: Debian 13 (Trixie),
+# which Raspberry Pi OS 13 is built on, removed it, and apt-get fails outright.
+#
+#   ffmpeg      writes clips as H.264 (needs libx264) so the dashboard can play them
+#   alsa-utils  aplay/amixer — the deterrent
+#   v4l-utils   v4l2-ctl, for checking the camera
+#   sqlite3     the CLI, for inspecting data/heron.db by hand
 echo ""
 echo "Installing system dependencies..."
 sudo apt-get install -y \
     python3-pip \
     python3-venv \
-    libopencv-dev \
-    python3-opencv \
+    git \
+    ffmpeg \
     alsa-utils \
     v4l-utils \
-    libportaudio2 \
-    sqlite3 \
-    git \
-    libatlas-base-dev \
-    libjpeg-dev \
-    libopenjp2-7
+    sqlite3
 
-# Raspberry Pi 4 specific setup
+# Raspberry Pi: send sound to the 3.5 mm jack.
+#
+# Out of the box ALSA's default is HDMI (card 0), so the deterrent plays to
+# nothing while every check passes. This is system-wide on purpose: the Pi
+# desktop's volume plugin removes ~/.asoundrc at login, so a per-user file
+# silently stops working after a reboot. And by card name, not number, because
+# numbers can shift between boots. "defaults.pcm.card Headphones" looks simpler
+# but alsa-lib rejects it ("card is not a string"), breaking ALSA entirely.
 if [ "$IS_RASPI" = true ]; then
     echo ""
-    echo "=== Raspberry Pi 4 specific setup ==="
-
-    # Enable camera interface via raspi-config (non-interactive)
-    echo "Enabling camera interface..."
-    sudo raspi-config nonint do_camera 0
-
-    # Ensure audio output goes to 3.5mm jack (0=auto, 1=headphones, 2=HDMI)
-    echo "Setting audio output to 3.5mm jack..."
-    sudo raspi-config nonint do_audio 1
-
+    if [ -e /etc/asound.conf ]; then
+        echo "/etc/asound.conf already exists — leaving it alone. Check it sends sound to the 3.5 mm jack."
+    elif grep -q "Headphones" /proc/asound/cards 2>/dev/null; then
+        echo "Sending sound to the 3.5 mm jack (/etc/asound.conf)..."
+        sudo tee /etc/asound.conf >/dev/null <<'EOF'
+# heron_deterrent: the speaker is on the 3.5 mm jack. Without this, ALSA
+# defaults to HDMI (card 0) and the deterrent plays to nothing.
+# System-wide, not ~/.asoundrc: the desktop volume plugin removes that at login.
+# By name, not number: card numbers can shift between boots.
+pcm.!default {
+    type plug
+    slave.pcm "hw:Headphones"
+}
+ctl.!default {
+    type hw
+    card "Headphones"
+}
+EOF
+    else
+        echo "WARNING: no 'Headphones' sound card found — /etc/asound.conf not written."
+        echo "         Sound will go to ALSA's default device. Check with: aplay -l"
+    fi
 fi
 
 # Create virtual environment
@@ -72,24 +97,20 @@ echo "Installing Python packages..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install tflite-runtime inside the venv (Pi)
-# The correct install method depends on the Python version:
-#   Python 3.9  → Google Coral wheel (only version with a pre-built cp39 aarch64 wheel)
-#   Python 3.10+ → tflite-runtime is on PyPI with proper aarch64 wheels
+# TFLite runtime (Pi)
+#
+# tflite-runtime has no wheel for Python 3.13, which Raspberry Pi OS 13 ships:
+# pip finds no versions at all. ai-edge-litert is its successor (TensorFlow Lite
+# was renamed LiteRT) and installs cleanly; ai/model_loader.py tries it after
+# tflite_runtime.
 if [ "$IS_RASPI" = true ]; then
     echo ""
-    echo "Installing tflite-runtime into venv..."
-    PY_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
-    if [ "$PY_MINOR" = "9" ]; then
-        TFLITE_WHEEL="https://github.com/google-coral/pycoral/releases/download/v2.0.0/tflite_runtime-2.5.0.post1-cp39-cp39-linux_aarch64.whl"
-        pip install "$TFLITE_WHEEL" || echo "WARNING: tflite-runtime wheel install failed."
-    else
-        # Python 3.10+ — PyPI has aarch64 wheels
-        pip install tflite-runtime || echo "WARNING: tflite-runtime install failed. Try: pip install tflite-runtime --extra-index-url https://google-coral.github.io/py-repo/"
-    fi
+    echo "Installing ai-edge-litert (the TFLite runtime) into venv..."
+    pip install ai-edge-litert || echo "WARNING: ai-edge-litert install failed — the model will not load."
 fi
 
-# Create directory structure
+# Create directory structure. models/ must exist before you scp a model into
+# it: it is gitignored, so a fresh clone does not have it.
 echo ""
 echo "Creating directory structure..."
 mkdir -p models sounds media data
@@ -111,25 +132,28 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
-echo "1. Copy the model for your target into models/ (models are not in git):"
-echo "     target: cpu      ->  models/heron_cpu_int8.tflite   (either board)"
-echo "     target: edgetpu  ->  models/heron_edgetpu.tflite    (Coral, currently broken)"
+echo "1. Copy the model into models/ from your laptop (models are not in git):"
+echo "     scp models/heron_cpu_int8.tflite $USER@<board-ip>:~/heron_deterrent/models/"
 echo "   config.yaml selects the backend with ai.target (currently: $(grep -m1 "^  target:" config.yaml | awk "{print \$2}"))"
-echo "2. Add WAV sound files to sounds/ (startup fails if it is empty)"
+echo "2. sounds/ already has startle_default.wav; add more .wav files if you like"
 echo "3. For SMS, put credentials in /etc/heron-deterrent.env (root, mode 600) —"
 echo "   never in config.yaml, which is tracked in git:"
 echo "     TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER TWILIO_TO_NUMBER"
 echo "   Then set alert.sms_enabled: true in config.yaml"
-echo "4. Run: source venv/bin/activate"
-echo "5. Run: ./preflight.py     # checks every dependency before you start"
-echo "6. Run: python main.py"
-echo ""
-echo "To start with web UI: START_WEB_UI=true python main.py"
+echo "4. Run: venv/bin/python preflight.py     # checks every dependency; plays the deterrent"
+echo "5. Run: START_WEB_UI=true venv/bin/python main.py"
 echo ""
 if [ "$IS_RASPI" = true ]; then
-    echo "Pi 4 tips:"
-    echo "  - If camera is not detected: run 'vcgencmd get_camera' to verify it's enabled"
-    echo "  - If audio is silent: run 'aplay -l' to list devices, 'speaker-test -t wav' to test"
-    echo "  - To check tflite: python3 -c 'import tflite_runtime.interpreter; print(\"OK\")'"
+    if [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
+        echo "NOTE: this Pi boots to the desktop. Nothing here needs it, and in a sealed"
+        echo "      box it is only extra heat. To boot to the console instead:"
+        echo "        sudo systemctl set-default multi-user.target && sudo reboot"
+        echo ""
+    fi
+    echo "Pi tips:"
+    echo "  - Camera: v4l2-ctl --list-devices"
+    echo "  - Sound:  preflight plays the deterrent — listen for it. It passes on any"
+    echo "            device that exists, so it cannot tell you the speaker is silent"
+    echo "  - Heat:   vcgencmd measure_temp; vcgencmd get_throttled   # want throttled=0x0"
     echo ""
 fi

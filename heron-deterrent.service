@@ -2,8 +2,13 @@
 # Systemd service unit for the Heron Deterrent System
 #
 # Paths below are for the Raspberry Pi (user "pi", repo cloned
-# to /home/pi/heron_deterrent). On the legacy Coral Dev Board,
-# change User/Group to "mendel" and both paths to /home/mendel.
+# to /home/pi/heron_deterrent). If you chose a different
+# username in Raspberry Pi Imager, change User/Group and both
+# paths to match. On the legacy Coral Dev Board that is "mendel".
+#
+# Sound goes wherever ALSA's default points. setup.sh writes
+# /etc/asound.conf to make that the 3.5 mm jack; without it the
+# default is HDMI and the deterrent is silent.
 #
 # Install:
 #   sudo cp heron-deterrent.service /etc/systemd/system/
