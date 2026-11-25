@@ -1,9 +1,9 @@
 # ============================================================
 # Systemd service unit for the Heron Deterrent System
 #
-# Paths below are for the Coral Dev Board (Mendel Linux, user
-# "mendel"). On a Raspberry Pi, change User/Group to "pi" and
-# both paths from /home/mendel to /home/pi.
+# Paths below are for the Raspberry Pi (user "pi", repo cloned
+# to /home/pi/heron_deterrent). On the legacy Coral Dev Board,
+# change User/Group to "mendel" and both paths to /home/mendel.
 #
 # Install:
 #   sudo cp heron-deterrent.service /etc/systemd/system/
@@ -31,10 +31,10 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=mendel
-Group=mendel
-WorkingDirectory=/home/mendel/heron_deterrent
-ExecStart=/home/mendel/heron_deterrent/venv/bin/python main.py
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/heron_deterrent
+ExecStart=/home/pi/heron_deterrent/venv/bin/python main.py
 
 # Start the web UI automatically
 Environment="START_WEB_UI=true"
