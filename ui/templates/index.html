@@ -772,26 +772,74 @@
         }
         .modal-close:hover { color: var(--text); }
 
-        .canvas-wrap {
-            position: relative;
-            display: inline-block;
-            max-width: 100%;
+        /* The labelling window takes the screen. */
+        .modal.label-modal { width: 98vw; height: 96vh; max-height: 96vh; }
+        .label-pos { margin-left: auto; margin-right: 12px; font-size: 12px; color: var(--text-dim); }
+        .label-layout { flex: 1; min-height: 0; display: flex; }
+        .label-main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px; }
+        .label-side {
+            width: 300px;
+            flex-shrink: 0;
+            padding: 12px 14px;
+            border-left: 1px solid var(--border);
+            overflow-y: auto;
+        }
+        .stage {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             background: #000;
             border-radius: 4px;
-            overflow: hidden;
         }
-        .canvas-wrap img,
-        .canvas-wrap canvas {
+        @media (max-width: 900px) {
+            .label-layout { flex-direction: column; overflow-y: auto; }
+            .label-main { flex: none; height: 62vh; }
+            .label-side { width: auto; border-left: none; border-top: 1px solid var(--border); }
+        }
+
+        /* COORDINATES: the img and the canvas over it are both sized by
+           fitFrame() in whole CSS pixels, and box coordinates are scaled by
+           exactly that size. Nothing here may scale either one — no
+           max-width, no height:auto, no padding or border on the wrap, no
+           object-fit — or the drawing layer stops sitting on the image and
+           boxes land in the wrong place in the training data. saveLabel()
+           refuses to save if they drift apart; tests/test_label_coords.py
+           pins the arithmetic. */
+        .canvas-wrap {
+            position: relative;
             display: block;
-            max-width: 100%;
-            height: auto;
+            line-height: 0;
         }
+        .canvas-wrap img { display: block; }
         .canvas-wrap canvas {
             position: absolute;
             top: 0;
             left: 0;
             cursor: crosshair;
+            touch-action: none;      /* a drag draws a box, it does not scroll */
         }
+
+        .label-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .label-choices button {
+            text-align: left;
+            padding: 7px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border-hi);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .label-choices button:nth-child(-n+2) { grid-column: 1 / -1; }
+        .label-choices button small { color: var(--text-mute); margin-left: 4px; }
+        .label-choices button.active { border-color: var(--blue); background: rgba(88,166,255,0.12); }
+        .label-choices button[data-label="heron"].active { border-color: var(--yellow); background: rgba(210,153,34,0.14); }
+        .key-help { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+        .key-help summary { cursor: pointer; }
+        .key-help td { padding: 2px 6px 2px 0; vertical-align: top; }
+        .label-note { margin-top: 10px; font-size: 11px; color: var(--text-mute); }
 
         .frame-nav {
             display: flex;
@@ -1039,53 +1087,80 @@
     </div>
 </div>
 
-<!-- Label modal -->
+<!-- Label modal: as much of the screen as the frame can use. The frame and
+     the drawing layer over it are sized together, in whole pixels, by
+     fitFrame() — never by CSS — because their size is what box coordinates
+     are scaled by. See tests/test_label_coords.py. -->
 <div class="modal-backdrop" id="label-modal">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="label-title">
+    <div class="modal label-modal" role="dialog" aria-modal="true" aria-labelledby="label-title">
         <div class="modal-header">
             <span class="card-title" id="label-title">Label detection</span>
-            <button class="modal-close" onclick="closeLabelModal()" aria-label="Close">×</button>
+            <span class="label-pos" id="label-pos"></span>
+            <button class="modal-close" onclick="closeLabelModal()" aria-label="Close (Esc)">×</button>
         </div>
-        <div class="modal-body">
-            <div class="canvas-wrap" id="canvas-wrap">
-                <img id="label-image" alt="frame">
-                <canvas id="label-canvas"></canvas>
+        <div class="label-layout">
+            <div class="label-main">
+                <div class="stage" id="label-stage">
+                    <div class="canvas-wrap" id="canvas-wrap">
+                        <img id="label-image" alt="frame">
+                        <canvas id="label-canvas"></canvas>
+                    </div>
+                </div>
+                <div class="frame-nav">
+                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(-1)" title="Previous frame (←, Shift+← for 5)">◀</button>
+                    <input type="range" id="frame-slider" min="0" max="0" value="0"
+                           oninput="jumpToFrame(this.value)">
+                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(1)" title="Next frame (→, Shift+→ for 5)">▶</button>
+                    <span class="frame-counter" id="frame-counter">frame 0 / 0</span>
+                </div>
             </div>
 
-            <div class="frame-nav">
-                <button class="btn btn-subtle" onclick="stepFrame(-1)" title="Previous frame (←)">◀</button>
-                <input type="range" id="frame-slider" min="0" max="0" value="0"
-                       oninput="jumpToFrame(this.value)">
-                <button class="btn btn-subtle" onclick="stepFrame(1)" title="Next frame (→)">▶</button>
-                <span class="frame-counter" id="frame-counter">frame 0 / 0</span>
-            </div>
+            <div class="label-side">
+                <div class="label-choices" id="label-choices">
+                    <button data-label="heron"><kbd>H</kbd> Heron <small>draw a box</small></button>
+                    <button data-label="background"><kbd>N</kbd> No heron <small>background</small></button>
+                    <button data-label="bird"><kbd>B</kbd> Other bird</button>
+                    <button data-label="cat"><kbd>C</kbd> Cat</button>
+                    <button data-label="dog"><kbd>D</kbd> Dog</button>
+                    <button data-label="person"><kbd>P</kbd> Person</button>
+                    <button data-label="unknown"><kbd>U</kbd> Can't tell</button>
+                </div>
 
-            <div class="form-row" style="margin-top:12px;">
-                <select class="form-select" id="modal-label-select">
-                    <option value="heron">Heron (draw box)</option>
-                    <option value="background">No heron (background)</option>
-                    <option value="cat">Cat</option>
-                    <option value="dog">Dog</option>
-                    <option value="bird">Other Bird</option>
-                    <option value="person">Person</option>
-                    <option value="unknown">Unknown</option>
-                </select>
-                <button class="btn btn-subtle" onclick="undoBox()" title="Undo last box (Ctrl-Z)">Undo</button>
-                <button class="btn btn-subtle" onclick="clearBoxes()">Clear</button>
-                <button class="btn btn-primary" onclick="saveLabel()">Save</button>
-            </div>
+                <!-- Which training set this frame goes into. Refreshed on every
+                     frame step, because a clip can straddle a mode switch. -->
+                <div class="domain-banner" id="domain-banner">Checking frame type…</div>
 
-            <!-- Which training set this frame goes into. Refreshed on every
-                 frame step, because a clip can straddle a mode switch. -->
-            <div class="domain-banner" id="domain-banner">Checking frame type…</div>
+                <div class="box-list" id="box-list"></div>
+                <div class="label-err" id="label-err"></div>
 
-            <div class="box-list" id="box-list"></div>
-            <div class="label-err" id="label-err"></div>
+                <div class="btn-row">
+                    <button class="btn btn-primary" onclick="saveLabel(true)">Save &amp; next <kbd>Enter</kbd></button>
+                    <button class="btn btn-subtle" onclick="saveLabel(false)">Save &amp; close</button>
+                </div>
+                <div class="btn-row" style="margin-top:6px;">
+                    <button class="btn btn-subtle btn-sm" onclick="stepClip(-1)">‹ Prev clip <kbd>[</kbd></button>
+                    <button class="btn btn-subtle btn-sm" onclick="stepClip(1)">Skip <kbd>]</kbd> ›</button>
+                    <button class="btn btn-subtle btn-sm" onclick="undoBox()">Undo box</button>
+                    <button class="btn btn-subtle btn-sm" onclick="clearBoxes()">Clear</button>
+                </div>
 
-            <div style="margin-top:10px; font-size:11px; color:var(--text-mute);">
-                Draw with click-and-drag. Every "heron" label needs at least one box; other
-                labels are written as background examples (empty annotation) — that is the
-                correct YOLO convention for single-class training.
+                <details class="key-help">
+                    <summary>Keyboard</summary>
+                    <table>
+                        <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>frame (<kbd>Shift</kbd> ×5, <kbd>Home</kbd>/<kbd>End</kbd>)</td></tr>
+                        <tr><td><kbd>H</kbd> <kbd>N</kbd> <kbd>B</kbd> <kbd>C</kbd> <kbd>D</kbd> <kbd>P</kbd> <kbd>U</kbd></td><td>choose label</td></tr>
+                        <tr><td><kbd>Enter</kbd></td><td>save, open next clip</td></tr>
+                        <tr><td><kbd>Shift</kbd>+<kbd>Enter</kbd></td><td>save and close</td></tr>
+                        <tr><td><kbd>]</kbd> <kbd>[</kbd></td><td>next / previous clip, no save</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Del</kbd></td><td>undo box · clear boxes</td></tr>
+                        <tr><td><kbd>Esc</kbd></td><td>close</td></tr>
+                    </table>
+                </details>
+                <div class="label-note">
+                    Drag on the frame to draw. A heron needs at least one box; every other
+                    label is saved as a background example (empty annotation) — the correct
+                    YOLO convention for single-class training.
+                </div>
             </div>
         </div>
     </div>
@@ -1757,6 +1832,8 @@
         drawing: null,       // {startX, startY, curX, curY} in canvas coords
         domain: null,        // training set this frame would go to; null = cannot save
         confirmedDomain: null, // operator's choice, for clips with no settled type
+        label: null,         // chosen label; nothing is saved until there is one
+        loadSeq: 0,          // guards against a slow frame load landing late
     };
 
     // Ask the server which training set THIS frame would be filed under. It
@@ -1817,6 +1894,7 @@
         labelState.domain = null;
         labelState.confirmedDomain = null;
         clearLabelError();
+        setLabel(null);
 
         try {
             const r = await fetch(`/api/detection/${detectionId}/frame-info`);
@@ -1831,10 +1909,12 @@
         }
 
         document.getElementById('label-title').textContent =
-            `Label detection ${detectionId} — native ${labelState.nativeW}x${labelState.nativeH}`;
+            `Label detection ${detectionId} — native ${labelState.nativeW}×${labelState.nativeH}`;
+        const pos = triage.shown.findIndex(d => d.id === detectionId);
+        document.getElementById('label-pos').textContent =
+            pos >= 0 ? `clip ${pos + 1} of ${triage.shown.length} in triage` : '';
         document.getElementById('frame-slider').max = Math.max(labelState.frameCount - 1, 0);
         document.getElementById('frame-slider').value = 0;
-        document.getElementById('modal-label-select').value = 'heron';
 
         document.getElementById('label-modal').classList.add('open');
         await loadFrame(0);
@@ -1845,14 +1925,40 @@
         labelState.detectionId = null;
     }
 
+    // Next/previous clip in the triage sheet's display order.
+    function neighbourClip(delta) {
+        const i = triage.shown.findIndex(d => d.id === labelState.detectionId);
+        return i < 0 ? null : (triage.shown[i + delta] || null);
+    }
+
+    function stepClip(delta) {
+        const next = neighbourClip(delta);
+        if (next) openLabelModal(next.id);
+        else toast(delta > 0 ? 'That was the last clip in triage' : 'That was the first clip', 'info');
+    }
+
+    function setLabel(label) {
+        labelState.label = label;
+        document.querySelectorAll('#label-choices button').forEach(b =>
+            b.classList.toggle('active', b.dataset.label === label));
+        clearLabelError();
+    }
+
+    document.getElementById('label-choices').addEventListener('click', evt => {
+        const b = evt.target.closest('[data-label]');
+        if (b) setLabel(b.dataset.label);
+    });
+
     async function loadFrame(index) {
         const img = document.getElementById('label-image');
+        const seq = ++labelState.loadSeq;
         labelState.frameIndex = index;
         // Cache-bust: same URL for the same (id, index) would otherwise reuse
         // a stale image if the video path is ever recycled.
         img.src = `/api/detection/${labelState.detectionId}/frame/${index}?t=${Date.now()}`;
         await img.decode().catch(() => {});
-        resizeCanvas();
+        if (seq !== labelState.loadSeq) return;       // a newer step overtook this one
+        fitFrame();
         redrawBoxes();
         updateFrameCounter();
         await refreshDomain();
@@ -1875,29 +1981,94 @@
             `frame ${labelState.frameIndex + 1} / ${labelState.frameCount}`;
     }
 
-    function resizeCanvas() {
-        const img = document.getElementById('label-image');
-        const canvas = document.getElementById('label-canvas');
-        // Use clientWidth/Height so the canvas overlays whatever CSS decided
-        // the img is displayed at. naturalWidth/Height is the browser's view
-        // of the source; we store native separately (from the API) because a
-        // JPEG can theoretically differ from the video's own dims.
-        canvas.width = img.clientWidth;
-        canvas.height = img.clientHeight;
+    // ── Coordinate transforms — pure, no DOM ───────────────────────────
+    // Three coordinate systems: pointer (client px) -> canvas px -> native
+    // frame px. These functions are the whole of the arithmetic, and
+    // tests/test_label_coords.py runs them, verbatim, in Node.
+    function boxCanvasToNative(b, canvasW, canvasH, nativeW, nativeH) {
+        const sx = nativeW / canvasW;
+        const sy = nativeH / canvasH;
+        return { x: b.x * sx, y: b.y * sy, w: b.w * sx, h: b.h * sy };
     }
 
+    function boxNativeToCanvas(b, canvasW, canvasH, nativeW, nativeH) {
+        const sx = canvasW / nativeW;
+        const sy = canvasH / nativeH;
+        return { x: b.x * sx, y: b.y * sy, w: b.w * sx, h: b.h * sy };
+    }
+
+    // Pointer position in canvas pixels, clamped to the canvas: a drag that
+    // runs off the frame ends at its edge instead of producing a box the
+    // server would refuse as off-frame.
+    function pointerToCanvas(clientX, clientY, rect, canvasW, canvasH) {
+        const x = (clientX - rect.left) * (canvasW / rect.width);
+        const y = (clientY - rect.top) * (canvasH / rect.height);
+        return { x: Math.min(Math.max(x, 0), canvasW), y: Math.min(Math.max(y, 0), canvasH) };
+    }
+
+    // null if the drawing layer sits exactly on the image at the frame's
+    // true size; otherwise why not. Checked before every save: a CSS change
+    // that moves one without the other corrupts every box silently.
+    // The rects must be CONTENT boxes (see contentRect): with box-sizing:
+    // border-box and an explicit size, a padding on the img shrinks and
+    // shifts the picture inside an outer box that does not move at all.
+    function overlayMisalignment(imgRect, canvasRect, natural, native, tol = 1) {
+        if (!imgRect.width || !imgRect.height) return 'the frame is not displayed';
+        if (natural.w !== native.w || natural.h !== native.h)
+            return `the frame image is ${natural.w}×${natural.h} but the clip is ${native.w}×${native.h}`;
+        if (imgRect.fit && imgRect.fit !== 'fill')
+            return `the image has object-fit: ${imgRect.fit}, which moves its pixels inside its box`;
+        for (const k of ['left', 'top', 'width', 'height']) {
+            if (Math.abs(imgRect[k] - canvasRect[k]) > tol)
+                return `drawing layer ${k} is ${canvasRect[k].toFixed(1)}px, image ${imgRect[k].toFixed(1)}px`;
+        }
+        return null;
+    }
+
+    // Where an element's pixels actually are: its content box. Bounding
+    // rects are border boxes, which padding and borders do not move.
+    function contentRect(el) {
+        const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+        const px = p => parseFloat(cs[p]) || 0;
+        const l = px('paddingLeft') + px('borderLeftWidth');
+        const t = px('paddingTop') + px('borderTopWidth');
+        return {
+            left: r.left + l,
+            top: r.top + t,
+            width: r.width - l - px('paddingRight') - px('borderRightWidth'),
+            height: r.height - t - px('paddingBottom') - px('borderBottomWidth'),
+            fit: cs.objectFit,
+        };
+    }
+
+    // Size the frame to the largest whole-pixel box that fits the stage at
+    // the frame's own aspect ratio, and the drawing layer to exactly that.
+    function fitFrame() {
+        const stage = document.getElementById('label-stage');
+        const img = document.getElementById('label-image');
+        const canvas = document.getElementById('label-canvas');
+        if (!labelState.nativeW) return;
+        const scale = Math.min(stage.clientWidth / labelState.nativeW,
+                               stage.clientHeight / labelState.nativeH);
+        const w = Math.max(1, Math.floor(labelState.nativeW * scale));
+        const h = Math.max(1, Math.floor(labelState.nativeH * scale));
+        img.style.width = canvas.style.width = `${w}px`;
+        img.style.height = canvas.style.height = `${h}px`;
+        canvas.width = w;
+        canvas.height = h;
+    }
+
+    // DOM wrappers: the canvas's current size and the clip's native size.
     function nativeToCanvas(box) {
         const canvas = document.getElementById('label-canvas');
-        const sx = canvas.width / labelState.nativeW;
-        const sy = canvas.height / labelState.nativeH;
-        return { x: box.x * sx, y: box.y * sy, w: box.w * sx, h: box.h * sy };
+        return boxNativeToCanvas(box, canvas.width, canvas.height,
+                                 labelState.nativeW, labelState.nativeH);
     }
 
     function canvasToNative(cx, cy, cw, ch) {
         const canvas = document.getElementById('label-canvas');
-        const sx = labelState.nativeW / canvas.width;
-        const sy = labelState.nativeH / canvas.height;
-        return { x: cx * sx, y: cy * sy, w: cw * sx, h: ch * sy };
+        return boxCanvasToNative({ x: cx, y: cy, w: cw, h: ch }, canvas.width, canvas.height,
+                                 labelState.nativeW, labelState.nativeH);
     }
 
     function redrawBoxes() {
@@ -1906,12 +2077,12 @@
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.lineWidth = 2;
         ctx.strokeStyle = '#d29922'; // yellow
-        ctx.font = '11px system-ui';
+        ctx.font = '12px system-ui';
         ctx.fillStyle = 'rgba(210,153,34,0.85)';
         labelState.boxes.forEach((b, i) => {
             const c = nativeToCanvas(b);
             ctx.strokeRect(c.x, c.y, c.w, c.h);
-            ctx.fillText(String(i + 1), c.x + 3, c.y + 12);
+            ctx.fillText(String(i + 1), c.x + 3, c.y + 13);
         });
         if (labelState.drawing) {
             const {startX, startY, curX, curY} = labelState.drawing;
@@ -1964,24 +2135,25 @@
         e.classList.add('show');
     }
 
-    // ── Canvas mouse handling ──────────────────────────────────────
+    // ── Canvas pointer handling ─────────────────────────────────────
     (function wireCanvas() {
         const canvas = document.getElementById('label-canvas');
 
         function pos(evt) {
-            const rect = canvas.getBoundingClientRect();
-            return {
-                x: (evt.clientX - rect.left) * (canvas.width / rect.width),
-                y: (evt.clientY - rect.top)  * (canvas.height / rect.height),
-            };
+            return pointerToCanvas(evt.clientX, evt.clientY, contentRect(canvas),
+                                   canvas.width, canvas.height);
         }
 
-        canvas.addEventListener('mousedown', evt => {
+        // Pointer events: mouse, touch and pen alike, so a box can be drawn
+        // with a finger on a phone. The pointer is captured for the drag, so
+        // one that leaves the frame still ends here, clamped to the edge.
+        canvas.addEventListener('pointerdown', evt => {
             if (!labelState.detectionId) return;
+            canvas.setPointerCapture(evt.pointerId);
             const p = pos(evt);
             labelState.drawing = {startX: p.x, startY: p.y, curX: p.x, curY: p.y};
         });
-        canvas.addEventListener('mousemove', evt => {
+        canvas.addEventListener('pointermove', evt => {
             if (!labelState.drawing) return;
             const p = pos(evt);
             labelState.drawing.curX = p.x;
@@ -2000,29 +2172,42 @@
             const ch = Math.abs(p.y - startY);
             if (cw < 4 || ch < 4) { redrawBoxes(); return; } // ignore stray click
             labelState.boxes.push(canvasToNative(cx, cy, cw, ch));
-            clearLabelError();
+            setLabel('heron');                    // a box only means one thing
             redrawBoxes();
         }
-        canvas.addEventListener('mouseup',   finish);
-        canvas.addEventListener('mouseleave', evt => {
-            if (labelState.drawing) finish(evt);
-        });
+        canvas.addEventListener('pointerup', finish);
+        canvas.addEventListener('pointercancel', () => { labelState.drawing = null; redrawBoxes(); });
     })();
 
-    // Redraw on window resize so overlaid boxes track the image.
+    // Re-fit on window resize; boxes are stored native, so they follow.
     window.addEventListener('resize', () => {
         if (!labelState.detectionId) return;
-        resizeCanvas(); redrawBoxes();
+        fitFrame(); redrawBoxes();
     });
+
+    const LABEL_KEYS = { h: 'heron', n: 'background', b: 'bird', c: 'cat',
+                         d: 'dog', p: 'person', u: 'unknown' };
 
     document.addEventListener('keydown', evt => {
         if (!document.getElementById('label-modal').classList.contains('open')) return;
-        if (evt.key === 'ArrowLeft')  { stepFrame(-1); evt.preventDefault(); }
-        if (evt.key === 'ArrowRight') { stepFrame(1);  evt.preventDefault(); }
-        if (evt.key === 'Escape')     { closeLabelModal(); }
-        if ((evt.ctrlKey || evt.metaKey) && evt.key === 'z') {
-            undoBox(); evt.preventDefault();
-        }
+        if (evt.target.tagName === 'INPUT' && evt.target.type !== 'range') return;
+        const k = evt.key;
+        const step = evt.shiftKey ? 5 : 1;
+        let handled = true;
+        if ((evt.ctrlKey || evt.metaKey) && k.toLowerCase() === 'z') undoBox();
+        else if (evt.ctrlKey || evt.metaKey || evt.altKey) handled = false;
+        else if (k === 'ArrowLeft')  stepFrame(-step);
+        else if (k === 'ArrowRight') stepFrame(step);
+        else if (k === 'Home')       stepFrame(-labelState.frameCount);
+        else if (k === 'End')        stepFrame(labelState.frameCount);
+        else if (k === 'Enter')      saveLabel(!evt.shiftKey);
+        else if (k === ']')          stepClip(1);
+        else if (k === '[')          stepClip(-1);
+        else if (k === 'Escape')     closeLabelModal();
+        else if (k === 'Delete' || k === 'Backspace') clearBoxes();
+        else if (LABEL_KEYS[k.toLowerCase()]) setLabel(LABEL_KEYS[k.toLowerCase()]);
+        else handled = false;
+        if (handled) evt.preventDefault();
     });
 
     // Keys outside the label modal: the bulk confirmation, then the sheet.
@@ -2039,8 +2224,12 @@
         if (sheetKeydown(evt)) evt.preventDefault();
     });
 
-    async function saveLabel() {
-        const label = document.getElementById('modal-label-select').value;
+    async function saveLabel(andNext = false) {
+        const label = labelState.label;
+        if (!label) {
+            showLabelError('Choose a label first — H heron, N no heron, or another below.');
+            return;
+        }
         if (label === 'heron' && labelState.boxes.length === 0) {
             showLabelError("Draw at least one box before saving 'heron' — an "
                 + "empty annotation would train the model that this frame contains "
@@ -2052,11 +2241,25 @@
                 + "Nothing is saved until it does; day and night data must never mix.");
             return;
         }
+        if (label === 'heron') {
+            // Boxes are only as good as the overlay they were drawn on.
+            const img = document.getElementById('label-image');
+            const canvas = document.getElementById('label-canvas');
+            const why = overlayMisalignment(contentRect(img), contentRect(canvas),
+                { w: img.naturalWidth, h: img.naturalHeight },
+                { w: labelState.nativeW, h: labelState.nativeH });
+            if (why) {
+                showLabelError(`Not saved: ${why}. The boxes would land in the wrong `
+                    + `place in the training data — reload the page and redraw.`);
+                return;
+            }
+        }
         // Non-heron labels: strip boxes; the server would drop them anyway but
         // being explicit here keeps the wire small.
         const bboxes = (label === 'heron')
             ? labelState.boxes.map(b => [b.x, b.y, b.w, b.h])
             : [];
+        const next = andNext ? neighbourClip(1) : null;
 
         try {
             const r = await fetch('/api/label', {
@@ -2075,7 +2278,8 @@
                 toast(`Labelled detection ${labelState.detectionId} as "${label}"`
                       + (bboxes.length ? ` (${bboxes.length} box)` : '')
                       + (d.domain ? ` → ${d.domain} set` : ''), 'success');
-                closeLabelModal();
+                if (next) openLabelModal(next.id);
+                else closeLabelModal();
                 updateAll();
             } else {
                 showLabelError(d.error || 'save failed');

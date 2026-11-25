@@ -62,6 +62,10 @@ def _js_function(source: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces in function {name}")
 
 
+# The DOM-free functions the wrappers delegate to; always loaded.
+PURE_JS = ['boxCanvasToNative', 'boxNativeToCanvas', 'pointerToCanvas', 'overlayMisalignment']
+
+
 def _run_js(functions, canvas_w, canvas_h, native_w, native_h, expr):
     """Evaluate expr with the named template functions defined, the label
     canvas sized canvas_w x canvas_h and the clip native_w x native_h.
@@ -74,7 +78,7 @@ def _run_js(functions, canvas_w, canvas_h, native_w, native_h, expr):
         f"const CANVAS = {{width: {canvas_w}, height: {canvas_h}}};",
         "const document = {getElementById: () => CANVAS};",
         f"const labelState = {{nativeW: {native_w}, nativeH: {native_h}}};",
-        *(_js_function(source, f) for f in functions),
+        *(_js_function(source, f) for f in [*PURE_JS, *functions]),
         f"console.log(JSON.stringify({expr}));",
     ])
     out = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=30)
@@ -246,6 +250,53 @@ def test_js_native_to_canvas_round_trips():
         print("SKIP test_js_native_to_canvas_round_trips (node not installed)")
         return
     _close(got, (37.0, 301.0, 120.0, 90.0), "round trip")
+
+
+def test_js_pointer_maps_through_a_css_scaled_canvas_and_clamps():
+    """The pointer arrives in client pixels. The canvas's on-screen rect may
+    differ from its drawing buffer (zoom, a 2x screen, a CSS change), so the
+    mapping scales by buffer/rect per axis — and a drag off the frame stops
+    at its edge rather than producing an off-frame box."""
+    rect = {'left': 100.5, 'top': 40.25, 'width': 606.5, 'height': 455.0}
+    got = _run_js([], 0, 0, 0, 0,
+                  "[pointerToCanvas(100.5 + 303.25, 40.25 + 113.75, %s, 1213, 910),"
+                  " pointerToCanvas(5, 1000, %s, 1213, 910)]" % (json.dumps(rect), json.dumps(rect)))
+    if got is None:
+        print("SKIP test_js_pointer_maps_through_a_css_scaled_canvas_and_clamps (node not installed)")
+        return
+    inside, outside = got
+    assert abs(inside['x'] - 303.25 * 1213 / 606.5) < 1e-6, inside      # 606.5
+    assert abs(inside['y'] - 113.75 * 910 / 455.0) < 1e-6, inside       # 227.5
+    assert outside == {'x': 0, 'y': 910}, outside
+
+
+def test_js_overlay_check_passes_aligned_and_names_each_drift():
+    """saveLabel refuses when the drawing layer and the image disagree — the
+    failure a CSS change would otherwise cause silently. Aligned within a
+    pixel passes; each kind of drift is caught and named."""
+    img = {'left': 50, 'top': 60, 'width': 1213, 'height': 910}
+    cases = {
+        'aligned':   ({**img, 'left': 50.4}, (640, 480)),
+        'shifted':   ({**img, 'top': 75}, (640, 480)),
+        'narrower':  ({**img, 'width': 1200}, (640, 480)),
+        'wrong jpg': (img, (320, 240)),
+    }
+    expr = '[' + ','.join(
+        "overlayMisalignment(%s, %s, {w: %d, h: %d}, {w: 640, h: 480})"
+        % (json.dumps(img), json.dumps(c), n[0], n[1]) for c, n in cases.values())
+    # object-fit moves the pixels inside an image box that does not move
+    expr += ", overlayMisalignment(%s, %s, {w: 640, h: 480}, {w: 640, h: 480})]" % (
+        json.dumps({**img, 'fit': 'contain'}), json.dumps(img))
+    got = _run_js([], 0, 0, 0, 0, expr)
+    if got is None:
+        print("SKIP test_js_overlay_check_passes_aligned_and_names_each_drift (node not installed)")
+        return
+    aligned, shifted, narrower, wrong, fitted = got
+    assert aligned is None, aligned
+    assert 'top' in shifted, shifted
+    assert 'width' in narrower, narrower
+    assert '320' in wrong and '640' in wrong, wrong
+    assert 'object-fit' in fitted, fitted
 
 
 # --- The server half, end to end -----------------------------------------------
