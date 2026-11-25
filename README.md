@@ -24,7 +24,9 @@ come up rather than stating them as fact. The main ones:
 - **Nothing has been measured inside the sealed box** — every temperature here
   is from the bench, in open air.
 - **Nothing has been measured at the pond** — no real heron, no outdoor scene,
-  no night.
+  no outdoor night. Night was tested indoors only, by switching the room
+  lights off: the camera cut to IR, the mode followed, and night motion was
+  recorded unclassified.
 - **The camera specification is the vendor's**, not measured. In particular
   whether the 96° field of view is horizontal or diagonal is open — see
   "Camera and mounting". (Whether 640×480 crops or squashes the sensor *was*
@@ -133,7 +135,21 @@ one applies.
 
 On the Pi, settling took about 2 s after a service restart but **26 s after a
 cold boot** — most likely the camera's auto-exposure finding its level. Motion
-in that window is recorded as `establishing`, as designed.
+in that window is recorded as `establishing`, as designed. With the room lights
+switched off, the ELP cut to IR and the mode read `day -> ir` 3.6 s after the
+motion the lights caused.
+
+**A switch can land in the middle of an event**, and on the bench it did: the
+lights going off was itself motion, caught in `day` mode. The trigger frame was
+inconclusive, so a clip was captured for the voting pass — and the mode
+switched to `ir` partway through it. The clip was saved as `unknown_day_…` and
+its database row says `frame_type: day`, but its per-frame record
+(`clip_frame_types` in the metadata) correctly shows 7 `day` frames then 18
+`ir`, and labelling goes by that per-frame record. What is *not* clean: the
+voting pass scored those mostly-IR key frames with the daylight model. Today
+that is harmless — the deterrent only fires from the trigger frame, and this
+event scored 0.000 — but it is the one place the daylight model judges
+infrared frames.
 
 When labelling, the dashboard says which training set the current frame goes
 into. That decision uses each frame's type **as recorded live when it was
@@ -169,8 +185,10 @@ its XNNPACK CPU delegate, 4 threads, 640×640 model), on the bench:
 | Metric | Value | How it was measured |
 |---|---|---|
 | Inference | **314 ms** median (313–343) | 20 runs after 3 warm-ups, on random input — a fair timing, but it says nothing about the scores |
-| Motion → deterrent sound | **not measured on the Pi** | 1.02 s on the Coral |
-| Saved clip size | 170 KB mean (5 s, 640×480, 5 fps, H.264) | 16 indoor clips on the bench; outdoor and IR clips will differ |
+| Motion → trigger-frame verdict | 373 ms | One real event: `Motion detected` to `Trigger frame inconclusive` in the log, so it includes letterboxing and post-processing. A single sample |
+| Motion → deterrent sound | **not measured on the Pi** | 1.02 s on the Coral. The deterrent is silent in every mode as shipped, so no real event has played it |
+| Saved clip size | 170 KB mean (5 s, 640×480, 5 fps, H.264) | 16 indoor clips on the bench; outdoor clips will differ |
+| Saved clip size, IR | 18–278 KB | 4 indoor IR clips. 278 KB is a person walking through; the small ones are near-static dark scenes |
 | Resident memory | 206 MB | The running service, `ps` RSS |
 | CPU, idle pond | ~55% of one core | The running service with no inference: motion detection, frame typing, dashboard |
 
@@ -248,7 +266,10 @@ reconnects show up without one, suspect power before code.
 
 The 1.2 A figure is Raspberry Pi's documented limit for all USB ports combined
 (not measured here), and the camera's IR current has not been measured either — so this is a precaution against a plausible
-failure, not a diagnosed one. The bench build had no hub and no night testing.
+failure, not a diagnosed one. The bench build had no hub. Its IR LEDs ran for
+a few minutes indoors with the camera straight on the Pi: no camera read
+failures, no USB errors in the kernel log, `throttled=0x0`. That is too short,
+and too warm and dry, to rule a brownout out on a cold night.
 
 ### The filter-house enclosure
 
@@ -410,8 +431,9 @@ through the dome material into it.
 
 **The cause** was that gasket **not seated flush against the inside of the
 dome**. Light from the LEDs got past it and reflected straight into the lens.
-(Found on this camera by the owner; not reproduced during the bench build,
-which never ran at night.)
+(Found on this camera by the owner. On the bench, with the gasket seated, the
+IR image indoors was clean — no haze, no ring — so there was nothing to
+diagnose. Rain and dirt on the dome outdoors are untested.)
 
 **The diagnostic.** If the image improves with the IR LEDs **off** (or covered),
 it is internal reflection, not the scene. A dirty or wet dome *outside* scatters
@@ -720,9 +742,11 @@ behind its verdict. Run preflight once in daylight and once after dark: the two
 readings should land clearly on either side of the `frame_type:` thresholds. If
 the night reading lands in the dead band, the camera is probably tinting its IR
 frames rather than sending pure black-and-white; raise `mono_max_chroma` above
-the tint. On the bench the ELP read chroma 33.5 / luma 93.5 lit indoors, and
-chroma 5.8 / luma 11 in a dim room (`dark`). It has **not** been read at night
-with its IR on.
+the tint. On the bench the ELP read chroma 33.5 / luma 93.5 lit indoors,
+chroma 5.8 / luma 11 in a dim room before its IR cut in (`dark`), and **chroma
+0.0 / luma ~63 on its own IR** with the room lights off — pure black-and-white,
+well clear of `mono_max_chroma: 1.5`. Outdoors, with a pond and a far bank,
+expect a lower luma.
 
 **CPU temperature** matters because the Pi lives in a sealed box. A throttling
 board looks exactly like "inference got slower for no reason". It FAILs at 80 °C

@@ -292,7 +292,8 @@ COLLECT MODE ON: recording day events above 0.3
 - [ ] Walk in front of the camera → the log shows `Motion detected (day)`.
       At night it shows `Motion detected (ir)` then
       `Motion (motion-only mode, raw=ir) — recording unclassified`, and no
-      inference runs (not yet seen on the Pi — the build never ran at night)
+      inference runs. Seen on the Pi with the room lights off — the quickest
+      night test there is, short of waiting for dark
 - [ ] Press **Test Speaker** on the dashboard → you hear the sound. This is a
       manual test and plays in every mode. Automatic firing is governed only
       by `modes.<mode>.deterrent`; when that is `false` a confident heron logs
@@ -449,7 +450,9 @@ the principle — the cap eats the oldest data first — does not change.)
 Running 24 hours adds the night, and the night is where volume becomes
 unpredictable: with no model to filter it, every moth in front of the IR LEDs
 and every raindrop on the housing is a clip. Daylight clips averaged ~147 KB on
-the Coral and ~170 KB on the Pi bench; IR clips are untested — assume ~200 KB.
+the Coral and ~170 KB on the Pi bench; indoor IR clips on the Pi ran 18–278 KB
+(278 KB with a person walking through) — assume ~200 KB until there is pond
+footage.
 Worst cases, from the cooldowns:
 
 | Pool (cap) | Worst case | Fills its cap in |
