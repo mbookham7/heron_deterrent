@@ -227,12 +227,16 @@ class HeronDeterrentSystem:
 
         return frames
 
-    def extract_key_frames(self, video_clip: list, num_frames: int = 5) -> list:
-        if len(video_clip) <= num_frames:
-            return video_clip
+    @staticmethod
+    def key_frame_indices(clip_length: int, num_frames: int = 5) -> list:
+        if clip_length <= num_frames:
+            return list(range(clip_length))
 
-        step = len(video_clip) // num_frames
-        return [video_clip[i * step] for i in range(num_frames)]
+        step = clip_length // num_frames
+        return [i * step for i in range(num_frames)]
+
+    def extract_key_frames(self, video_clip: list, num_frames: int = 5) -> list:
+        return [video_clip[i] for i in self.key_frame_indices(len(video_clip), num_frames)]
 
     def process_detection_event(self, video_clip: list, mode, metadata: dict = None):
         """Aggregate over key frames using N-of-M voting on the ALERT threshold.
@@ -247,12 +251,29 @@ class HeronDeterrentSystem:
         logger.info("Processing detection event...")
         detector = self.detectors[mode.name]
 
-        key_frames = self.extract_key_frames(video_clip, num_frames=self.alert_vote_m)
+        indices = self.key_frame_indices(len(video_clip), self.alert_vote_m)
 
-        detections = []
-        for frame in key_frames:
-            detection = detector.infer(frame)
-            detections.append(detection)
+        # Only frames of this mode's type get a vote. The camera can cut
+        # between day and IR while the clip is being captured (seen on the
+        # bench: switching the lights off), and the daylight model must never
+        # judge an IR frame. vote_k stays fixed, so a mixed clip needs as many
+        # agreeing frames as a clean one: a mid-clip switch can only demote an
+        # event to 'unknown', never produce an alert. Uploads carry no
+        # per-frame record; they are refused unless every key frame is day.
+        recorded = (metadata or {}).get('clip_frame_types')
+        if recorded and len(recorded) == len(video_clip):
+            eligible = [i for i in indices if recorded[i] == mode.name]
+            skipped = len(indices) - len(eligible)
+            if skipped:
+                logger.warning(
+                    f"Voting pass: {skipped} of {len(indices)} key frames are not "
+                    f"{mode.name} frames (frame type changed mid-clip) — not scored "
+                    f"by the {mode.name} model; still need {self.alert_vote_k} votes"
+                )
+                metadata['vote_frames_skipped'] = skipped
+            indices = eligible
+
+        detections = [detector.infer(video_clip[i]) for i in indices]
 
         final_detection = detector.aggregate_detections(
             detections,
