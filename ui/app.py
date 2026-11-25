@@ -204,6 +204,27 @@ def frame_jpeg(detection_id, index):
         cap.release()
 
 
+@app.route('/api/detection/<int:detection_id>/thumb')
+def frame_thumb(detection_id):
+    """A small JPEG of one frame (?frame=, default 0) for the triage contact
+    sheet. Display only — never used for labelling coordinates, which always
+    come from the native frame above. Cached on disk; generated one at a time.
+    The X-Thumb header says 'hit' or 'miss', for measuring the cost."""
+    if not system:
+        return "System not initialized", 500
+    detection = _detection_by_id(detection_id)
+    if not detection or not detection.get('video_path') \
+            or not Path(detection['video_path']).exists():
+        return "clip not found", 404
+    frame = max(0, request.args.get('frame', 0, type=int))
+    path, generated = system.thumbnails.get(detection['video_path'], frame)
+    if path is None:
+        return "cannot decode frame", 500
+    response = send_file(path, mimetype='image/jpeg', max_age=86400)
+    response.headers['X-Thumb'] = 'miss' if generated else 'hit'
+    return response
+
+
 @app.route('/api/detection/<int:detection_id>/frame/<int:index>/domain')
 def frame_domain(detection_id, index):
     """Which training set this frame would be filed under, BEFORE saving.

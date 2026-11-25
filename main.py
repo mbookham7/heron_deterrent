@@ -15,6 +15,7 @@ import sys
 from utils.config_loader import Config
 from storage.database import Database
 from storage.media_store import MediaStore
+from storage.thumbnails import ThumbnailCache
 from storage.video_encoder import require_encoder
 from capture.camera import Camera
 from capture.motion_detector import MotionDetector
@@ -94,6 +95,8 @@ class HeronDeterrentSystem:
 
         media_path = self.config.get('storage.media_path', './media/')
         self.media_store = MediaStore(media_path, fps=self.config.get('system.frame_rate', 5))
+        # Triage thumbnails, beside the database — not footage, not in media/.
+        self.thumbnails = ThumbnailCache(Path(db_path).parent / 'thumbs', media_path)
 
         # Config-driven components first: a bad model path or an empty sounds/
         # should be reported before we start grabbing hardware, so that a camera
@@ -539,6 +542,8 @@ class HeronDeterrentSystem:
                 self.media_store.enforce_size_cap(max_motion_gb, pool='motion')
                 # Curated training data is never auto-deleted, only reported.
                 self.media_store.warn_labeled_size(max_labeled_gb)
+                # After the sweeps above, so a deleted clip's thumbnail goes too.
+                self.thumbnails.prune()
                 time.sleep(CLEANUP_INTERVAL_SECONDS)
             except Exception as e:
                 logger.error(f"Error in cleanup: {e}")
