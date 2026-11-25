@@ -19,6 +19,7 @@
 # ============================================================
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Optional, Tuple
@@ -26,6 +27,24 @@ from typing import Optional, Tuple
 import cv2
 
 logger = logging.getLogger(__name__)
+
+
+def _yield_to_detection():
+    """Drop THIS thread to the lowest scheduling priority before decoding.
+
+    Measured on the Pi: with generation merely serialised, a cold contact
+    sheet of 38 clips raised the detector's inference from a median 386 ms to
+    662 ms while it loaded. The model runs on four threads that wait for one
+    another, so losing even part of one core stalls all four. Linux applies
+    niceness per thread, and Flask serves each request on its own thread, so
+    this lowers only the thumbnail work — never detection. Irreversible for
+    the thread (raising priority again needs privileges), which is fine: the
+    thread ends with the request. No-op where unsupported.
+    """
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+    except (AttributeError, OSError):
+        pass
 
 
 class ThumbnailCache:
@@ -52,6 +71,7 @@ class ThumbnailCache:
         path = self.path_for(video_path, frame)
         if path.exists():
             return path, False
+        _yield_to_detection()
         with self._lock:
             if path.exists():               # another request made it meanwhile
                 return path, False
@@ -71,7 +91,9 @@ class ThumbnailCache:
 
     @staticmethod
     def _frame(video_path: str, frame: int):
-        cap = cv2.VideoCapture(str(video_path))
+        # One decoder thread. FFmpeg otherwise starts one per core, so "one
+        # generation at a time" still occupied several cores.
+        cap = cv2.VideoCapture(str(video_path), cv2.CAP_ANY, [cv2.CAP_PROP_N_THREADS, 1])
         try:
             if not cap.isOpened():
                 return None
