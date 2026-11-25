@@ -158,6 +158,9 @@ nano config.yaml
       in every mode as shipped. Turning the sound on is `modes.day.deterrent:
       true`; a motion-only mode (`model: null`) with `deterrent: true` refuses
       to start
+- [ ] `audio.card: "Headphones"` — the 3.5 mm jack. A USB speaker instead?
+      Set its card id from `aplay -l`. A card that is not there refuses to
+      start
 - [ ] `audio.volume` — 80 as shipped, which is −17.3 dB on the jack, not "80%
       loud" (README, "Sound output")
 - [ ] `storage.max_media_gb` + `storage.max_motion_gb` (15 + 5 GB) — need a
@@ -267,6 +270,7 @@ Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | inp
 Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9 | iou=0.45
 day: vote=3/5 anchor_floor=0.9
 Loaded 1 deterrent sound(s): startle_default.wav
+Deterrent output: card Headphones                       <- audio.card; "ALSA default device" if null
 Camera 0 open at 640x480
 System started successfully
 Motion detected (establishing)                          <- motion before the frame type settles is still recorded

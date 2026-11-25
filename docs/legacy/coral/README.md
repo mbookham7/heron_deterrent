@@ -166,6 +166,11 @@ fit.
 **The unit file targets the Pi.** `heron-deterrent.service` runs as `pi` from
 `/home/pi`; on a Coral change `User`, `Group` and both paths to `mendel`.
 
+**So does `audio.card`.** It ships as `Headphones`, the Pi's 3.5 mm jack, and a
+card that is not present refuses to start. On a Coral set `audio.card: null`
+(ALSA's default, as before) or the card id from `aplay -l`. Not tried on a
+Coral.
+
 **Networking.** The bench board was on Wi-Fi (`wlan0`; there is no `eth0` on
 it), on DHCP, and its address moved between sessions. When it moves, SSH says
 `Host key verification failed`; confirm it is the same board with

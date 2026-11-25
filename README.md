@@ -145,11 +145,15 @@ inconclusive, so a clip was captured for the voting pass — and the mode
 switched to `ir` partway through it. The clip was saved as `unknown_day_…` and
 its database row says `frame_type: day`, but its per-frame record
 (`clip_frame_types` in the metadata) correctly shows 7 `day` frames then 18
-`ir`, and labelling goes by that per-frame record. What is *not* clean: the
-voting pass scored those mostly-IR key frames with the daylight model. Today
-that is harmless — the deterrent only fires from the trigger frame, and this
-event scored 0.000 — but it is the one place the daylight model judges
-infrared frames.
+`ir`, and labelling goes by that per-frame record. The voting pass used to score
+those mostly-IR key frames with the daylight model — the one place it judged
+infrared frames. It now uses the same per-frame record to skip any key frame
+whose type differs from the event's mode, logging `Voting pass: 3 of 5 key
+frames are not day frames … still need 3 votes`. `alert_vote_k` does not
+shrink, so a mixed clip needs as many agreeing daylight frames as a clean one:
+a switch mid-clip can turn an event into `unknown`, never into an alert.
+(Pinned by `tests/test_vote_frame_types.py`, which replays this bench event;
+not yet seen live, since it needs the lights to change mid-event again.)
 
 When labelling, the dashboard says which training set the current frame goes
 into. That decision uses each frame's type **as recorded live when it was
@@ -467,9 +471,19 @@ normal in the dashboard list. Look at a night clip, not just the counts.
 
 ## Sound output
 
-The deterrent plays through `aplay` with **no device named** — whatever ALSA's
-default is. Three things on the Pi make that harder than it sounds, and all
-three were hit on the build:
+The deterrent plays to the card named in **`audio.card`** — `Headphones`, the
+Pi's 3.5 mm jack, as shipped — passing it to both `aplay` (`-D
+plughw:CARD=Headphones`) and `amixer` (`-c Headphones`). A card that is not
+there is a startup error, listing the cards that are. Set `audio.card: null`
+to fall back to ALSA's default device instead.
+
+It is named because the default is a trap. On the build Pi, with the default
+forced to HDMI, the named card still played through the jack. Before
+`audio.card` existed, the deterrent played to the default, and three things on
+the Pi made that harder than it sounds — all three hit on the build. They still
+matter with `audio.card: null`, and for anything else that uses the default
+(`aplay` by hand, `speaker-test`), which is why `setup.sh` still writes
+`/etc/asound.conf`:
 
 1. **ALSA's default is HDMI**, not the 3.5 mm jack. Out of the box the
    deterrent plays to a monitor that is not there.
@@ -634,6 +648,7 @@ there, 640×480 is a crop of the sensor, so nothing is squashed either — see
 | `alert.sms_throttle_minutes` | `15` | Minimum gap between SMS messages |
 | `audio.volume` | `80` | Percent, applied via `amixer` before every play. Not linear: 80% is −17.3 dB on the Pi's jack — see "Sound output" |
 | `audio.sound_path` | `./sounds/` | Startup **fails** if this has no `.wav` files |
+| `audio.card` | `Headphones` | ALSA card id the deterrent plays to (`aplay -l`); `Headphones` is the Pi's 3.5 mm jack. Startup **fails** if it is not present. `null` = ALSA's default device — see "Sound output" |
 | `storage.retention_days` | `365` | Age-based deletion |
 | `storage.max_media_gb` | `15.0` | **Hard size cap** on clips a model looked at (`heron/`, `other/`, `unknown/`). Oldest first |
 | `storage.max_motion_gb` | `5.0` | **Separate hard cap** on unclassified clips (`motion/`), so a noisy night only evicts night clips |
@@ -737,7 +752,7 @@ A real run on the build Pi, with the service running:
 [PASS] model        heron: heron_cpu_int8.tflite loaded on CPU/4 threads, input 1x640x640x3
 [skip] edgetpu      ai.target is not 'edgetpu'
 [PASS] sounds       1 file(s), 172 KB: startle_default.wav
-[PASS] audio        default output is bcm2835 Headphones; deterrent not played (--skip-audio)
+[PASS] audio        deterrent plays to bcm2835 Headphones (audio.card: Headphones); not played (--skip-audio)
 [skip] camera       device 0 is held by the running heron-deterrent service
        -> That is expected. To test the device itself:
        ->   sudo systemctl stop heron-deterrent && venv/bin/python preflight.py
@@ -747,16 +762,19 @@ A real run on the build Pi, with the service running:
 [PASS] storage      clip caps 15 GB classified + 5 GB motion = 20 GB on a 116.8 GB filesystem
 [PASS] labeled      images by domain: day 0, ir 0, dark 0
 [PASS] database     data/heron.db writable (8 KB)
-[PASS] cpu temp     60.9 C  never throttled since boot
+[PASS] cpu temp     62.3 C  never throttled since boot
 [skip] sms         alert.sms_enabled is false
 
 All 11 checks passed.
 ```
 
-`bcm2835 Headphones` is the 3.5 mm jack. Pointed at HDMI instead, the same
-check reports `[FAIL] audio  sound goes to HDMI (vc4-hdmi-0), not the speaker`
-with the fix. With the service stopped the camera and frame-type checks run
-too, for 13 checks in all.
+`bcm2835 Headphones` is the 3.5 mm jack. The check plays exactly as the
+deterrent does — to `audio.card` — and watches which card actually runs. If
+that turns out to be HDMI (`audio.card: null` with ALSA's default on HDMI, as
+tested on the build), it reports `[FAIL] audio  sound goes to HDMI
+(vc4-hdmi-0), not the speaker` with the fix; a named card that does not exist
+FAILs with the list of cards that do. With the service stopped the camera and
+frame-type checks run too, for 13 checks in all.
 
 Every failure prints the command that fixes it. Exit status is 0 only when
 everything passes, so it can gate a deploy script. `[WARN]` lines do not fail
