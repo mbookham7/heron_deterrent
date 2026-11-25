@@ -950,18 +950,21 @@ board temperature):
 | During — one decoder thread, lowest priority (shipped) | **545–572 ms (+41–49%)** |
 | After | 382–392 ms |
 
-**A first view still slows detection while it loads.** Serialising
-generation was not enough — the video decoder starts a thread per core, and
-the model's four threads wait for one another, so losing part of one core
-stalls all four. One decoder thread and the lowest scheduling priority roughly
-halve the effect; they do not remove it. It lasts only while *new* clips'
-thumbnails are made (about 2 s for 40, and lazy loading means only those on
-screen), and inference is back to normal straight after. Later views are
-served from disk and showed no effect.
+**Thumbnails are now written when the clip is saved**, from frame 0 while it
+is still in memory: a resize and a JPEG encode, no video decode. Measured on
+the Pi over 60 real frames: median 1.7 ms, p95 4.0 ms, max 9.9 ms, on the
+detection thread *after* the clip is safely on disk (encoding the clip itself
+takes far longer). So for any clip recorded by this version, a first view costs
+what "every view after" costs above.
 
-Removing it entirely would mean writing each clip's thumbnail when the clip is
-saved, from the frame already in memory — no decode at all. That touches the
-capture path, so it has not been done without a decision.
+The decode path in the table is now only a fallback — clips recorded before
+this change, or a save-time write that failed (it logs a warning and never
+stops detection). That fallback still slows inference while it runs: serialising
+generation was not enough, because the video decoder starts a thread per core
+and the model's four threads wait for one another, so losing part of one core
+stalls all four. One decoder thread at the lowest scheduling priority roughly
+halves the effect. Once the older clips have been viewed, or have aged out,
+nothing decodes for thumbnails any more.
 
 > Every inconclusive motion event creates a WARNING "unknown" alert and saves a
 > clip. That is deliberate — it feeds triage — and the grouping keeps the

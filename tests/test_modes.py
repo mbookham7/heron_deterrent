@@ -155,6 +155,7 @@ def _system(mutate=None, shadow_conf=None):
         sd.infer.return_value = Detection('heron', shadow_conf)
         s.shadow_detectors = {'ir': sd}
     s.media_store = mock.Mock()
+    s.thumbnails = mock.Mock()
     s.media_store.save_video_clip.return_value = '/media/clip.mp4'
     s.alert_manager = mock.Mock()
     s.database = mock.Mock()

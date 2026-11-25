@@ -50,6 +50,7 @@ def _system(detector):
     system.alert_vote_k = 3
     system.alert_vote_m = 5
     system.media_store = mock.Mock()
+    system.thumbnails = mock.Mock()
     system.handle_detection_result = mock.Mock()
     return system
 

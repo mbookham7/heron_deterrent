@@ -286,10 +286,18 @@ class HeronDeterrentSystem:
             vote_k=self.alert_vote_k,
         )
 
-        video_path = self.media_store.save_video_clip(
-            video_clip, final_detection.label, frame_type=mode.name)
+        video_path = self._save_clip(video_clip, final_detection.label, mode.name)
 
         self.handle_detection_result(final_detection, video_path, mode, metadata)
+
+    def _save_clip(self, frames: list, label: str, frame_type: str) -> str:
+        """Save the clip, then its triage thumbnail from frame 0 while it is
+        still in memory, so the dashboard never has to decode the clip to show
+        it. After the save, so it adds nothing before the clip is safe."""
+        video_path = self.media_store.save_video_clip(frames, label, frame_type=frame_type)
+        if video_path and frames:
+            self.thumbnails.put(video_path, frames[0])
+        return video_path
 
     def _handle_motion_event(self, trigger_frame, snapshot):
         """Branch on the frame type at the moment of the trigger.
@@ -339,8 +347,7 @@ class HeronDeterrentSystem:
             )
             self.trigger_deterrent(mode)          # first, before anything slow
             video_clip = self._capture_clip_with_types(metadata)
-            video_path = self.media_store.save_video_clip(
-                video_clip, detection.label, frame_type=mode.name)
+            video_path = self._save_clip(video_clip, detection.label, mode.name)
             self.alert_manager.create_alert("CRITICAL", detection, video_path,
                                             frame_type=mode.name, metadata=metadata)
             return
@@ -376,8 +383,7 @@ class HeronDeterrentSystem:
             logger.info(f"SHADOW {mode.shadow_model} on {mode.name} frame: "
                         f"{d.label} {d.confidence:.3f} (logged only, not acted on)")
 
-        video_path = self.media_store.save_video_clip(
-            video_clip, 'motion', frame_type=snapshot.state)
+        video_path = self._save_clip(video_clip, 'motion', snapshot.state)
         self.alert_manager.create_motion_alert(snapshot.state, video_path, metadata)
 
     def handle_detection_result(self, detection, video_path: str, mode, metadata: dict = None):

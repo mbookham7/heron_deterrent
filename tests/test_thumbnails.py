@@ -181,6 +181,64 @@ def test_endpoint_serves_with_relative_config_paths():
             os.chdir(old)
 
 
+def test_put_writes_the_same_thumbnail_without_decoding_the_clip():
+    """Save time: the frame is in memory, so no decode — and get() afterwards
+    is a hit, never a miss."""
+    with tempfile.TemporaryDirectory() as t:
+        cache = ThumbnailCache(Path(t) / 'thumbs', Path(t) / 'media')
+        frame = np.full((480, 640, 3), 90, np.uint8)
+        clip = Path(t) / 'media' / 'motion' / 'motion_day_1.mp4'   # never written
+        path = cache.put(str(clip), frame)
+        assert path == cache.path_for(str(clip), 0) and path.exists()
+        assert cv2.imread(str(path)).shape[:2] == (240, 320)
+        assert cache.get(str(clip)) == (path, False)
+        assert not list(path.parent.glob('*.tmp'))
+
+
+def test_put_stays_at_normal_priority_and_never_raises():
+    """put() runs on the detection thread: it must not renice it, and a bad
+    frame or an unwritable cache must not kill detection."""
+    import os
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as t:
+        cache = ThumbnailCache(Path(t) / 'thumbs', Path(t) / 'media')
+        with mock.patch.object(os, 'setpriority') as renice:
+            cache.put('a.mp4', np.zeros((48, 64, 3), np.uint8))
+        renice.assert_not_called()
+        assert cache.put('', np.zeros((48, 64, 3), np.uint8)) is None
+        assert cache.put('b.mp4', None) is None
+        assert cache.put('c.mp4', np.zeros((0, 0, 3), np.uint8)) is None
+        cache.cache_dir.chmod(0o500)
+        try:
+            assert cache.put('d.mp4', np.zeros((48, 64, 3), np.uint8)) is None
+        finally:
+            cache.cache_dir.chmod(0o700)
+
+
+def test_every_saved_clip_gets_its_thumbnail_at_save_time():
+    """All three save paths in main.py go through _save_clip."""
+    from unittest import mock
+    from main import HeronDeterrentSystem
+    s = HeronDeterrentSystem.__new__(HeronDeterrentSystem)
+    s.media_store = mock.Mock()
+    s.thumbnails = mock.Mock()
+    frames = [np.full((48, 64, 3), i, np.uint8) for i in range(3)]
+
+    s.media_store.save_video_clip.return_value = '/m/motion_ir_1.mp4'
+    assert s._save_clip(frames, 'motion', 'ir') == '/m/motion_ir_1.mp4'
+    path, image = s.thumbnails.put.call_args[0]
+    assert path == '/m/motion_ir_1.mp4' and image is frames[0]
+
+    s.thumbnails.reset_mock()
+    s.media_store.save_video_clip.return_value = ''        # encode failed
+    assert s._save_clip(frames, 'motion', 'ir') == ''
+    s.thumbnails.put.assert_not_called()
+
+    source = (Path(__file__).resolve().parent.parent / 'main.py').read_text()
+    assert source.count('media_store.save_video_clip(') == 1, \
+        "a clip saved outside _save_clip gets no save-time thumbnail"
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0

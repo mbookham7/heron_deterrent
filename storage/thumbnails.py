@@ -9,7 +9,13 @@
 # read. Frame 0 also needs no seek; a middle frame costs ~3x as much because
 # the decoder walks from the keyframe.
 #
-# Two rules keep it from competing with detection on the same board:
+# Normally the detector writes each thumbnail when it saves the clip (put()),
+# from frame 0 still in memory: a resize and a JPEG encode, a few ms, with no
+# video decode at all. get() decoding the clip is the fallback, for clips saved
+# before this existed or whose put() failed. Measured on the Pi, a cold contact
+# sheet decoded this way slowed inference from ~385 to ~560 ms for ~2 s.
+#
+# Two rules keep that fallback from competing with detection:
 #   * one generation at a time, process-wide. A browser asks for a whole grid
 #     at once; serialising means a cold contact sheet uses at most one of the
 #     four cores, never all of them.
@@ -76,18 +82,36 @@ class ThumbnailCache:
             if path.exists():               # another request made it meanwhile
                 return path, False
             image = self._frame(video_path, frame)
-            if image is None:
+            if image is None or not self._write(path, image):
                 return None, False
-            h, w = image.shape[:2]
-            small = cv2.resize(image, (self.WIDTH, round(h * self.WIDTH / w)),
-                               interpolation=cv2.INTER_AREA)
-            ok, buffer = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, self.QUALITY])
-            if not ok:
-                return None, False
-            tmp = path.with_suffix('.tmp')
-            tmp.write_bytes(buffer.tobytes())
-            tmp.replace(path)               # never serve a half-written file
             return path, True
+
+    def put(self, video_path: str, image, frame: int = 0) -> Optional[Path]:
+        """Write the thumbnail from a frame already in memory, at clip-save
+        time. Runs on the detection thread, so it neither lowers the thread's
+        priority nor waits for get()'s lock, and it never raises: a missing
+        thumbnail only means get() makes it later."""
+        if not video_path or image is None:
+            return None
+        path = self.path_for(video_path, frame)
+        try:
+            return path if self._write(path, image) else None
+        except Exception as e:
+            logger.warning(f"Thumbnail for {Path(video_path).name} not written: {e}")
+            return None
+
+    def _write(self, path: Path, image) -> bool:
+        h, w = image.shape[:2]
+        small = cv2.resize(image, (self.WIDTH, round(h * self.WIDTH / w)),
+                           interpolation=cv2.INTER_AREA)
+        ok, buffer = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, self.QUALITY])
+        if not ok:
+            return False
+        # Per-thread temp name: put() and get() do not share a lock.
+        tmp = path.with_name(f"{path.name}.{threading.get_native_id()}.tmp")
+        tmp.write_bytes(buffer.tobytes())
+        tmp.replace(path)                   # never serve a half-written file
+        return True
 
     @staticmethod
     def _frame(video_path: str, frame: int):
