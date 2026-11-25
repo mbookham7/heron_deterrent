@@ -148,7 +148,8 @@ class HeronDeterrentSystem:
         # Audio player — raises if sounds/ is empty
         sound_path = self.config.get('audio.sound_path', './sounds/')
         volume = self.config.get('audio.volume', 80)
-        self.audio_player = AudioPlayer(sound_path, volume)
+        card = self.config.get('audio.card', None)
+        self.audio_player = AudioPlayer(sound_path, volume, card)
 
         # Camera
         device_id = self.config.get('system.camera_device_id', 0)

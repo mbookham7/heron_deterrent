@@ -210,17 +210,7 @@ def check_sounds(config):
     return wavs
 
 
-def parse_asound_cards(text):
-    """{card index: (id, description)} from /proc/asound/cards, whose card
-    lines look like ' 2 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones'."""
-    cards = {}
-    for line in text.splitlines():
-        head, _, rest = line.partition(']:')
-        if '[' not in head or not head.split('[')[0].strip().isdigit():
-            continue
-        index, card_id = head.split('[', 1)
-        cards[int(index)] = (card_id.strip(), rest.split(' - ', 1)[-1].strip())
-    return cards
+from deterrent.audio_player import parse_asound_cards  # noqa: E402  one definition, shared
 
 
 def audio_route_verdict(card_id):
@@ -260,7 +250,9 @@ def _play_and_watch(cmd, timeout):
     return proc.returncode, stderr.decode(errors='replace'), card
 
 
-def check_audio(wavs, skip_audio):
+def check_audio(wavs, skip_audio, card=None):
+    """card is audio.card: a named card the deterrent plays to, or None for
+    ALSA's default. Either way, the check watches where sound really goes."""
     if not shutil.which('aplay'):
         return check('audio', False, "aplay not found",
                      "sudo apt-get install -y alsa-utils")
@@ -282,16 +274,25 @@ def check_audio(wavs, skip_audio):
     except OSError:
         cards = {}
 
+    ids = [card_id for card_id, _ in cards.values()]
+    if card and cards and card not in ids:
+        return check('audio', False, f"audio.card is '{card}' but there is no such card",
+                     f"Cards present: {', '.join(ids)}  (see: aplay -l)",
+                     "Fix: edit config.yaml -> audio.card (null = ALSA's default device)")
+
+    # Play exactly as the deterrent does: to the named card, else the default.
+    device = ['-D', f'plughw:CARD={card}'] if card else []
+
     # --skip-audio still checks WHERE sound would go, by playing one second of
     # silence: a silent run should not mean an unchecked speaker route.
     quiet = skip_audio or not wavs
     if quiet:
         what = "1 s of silence"
-        cmd = ['aplay', '-q', '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '2',
+        cmd = ['aplay', '-q', *device, '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '2',
                '-d', '1', '/dev/zero']
     else:
         what = wavs[0].name
-        cmd = ['aplay', '-q', str(wavs[0])]
+        cmd = ['aplay', '-q', *device, str(wavs[0])]
 
     try:
         returncode, stderr, index = _play_and_watch(cmd, timeout=30)
@@ -316,8 +317,9 @@ def check_audio(wavs, skip_audio):
                      "  ./setup.sh        # writes /etc/asound.conf",
                      "See README, 'Sound output'. Then:  cat /etc/asound.conf")
     where = desc if verdict == 'pass' else "an output that could not be identified"
+    source = f"audio.card: {card}" if card else "ALSA default"
     if quiet:
-        return check('audio', True, f"default output is {where}; deterrent not played "
+        return check('audio', True, f"deterrent plays to {where} ({source}); not played "
                                     f"(--skip-audio)")
     return check('audio', True, f"played {what} on {where} — did you hear it?")
 
@@ -657,7 +659,7 @@ def main():
     loaded = check_model(config, modes)
     check_edge_tpu(config, model_loaded=bool(loaded))
     wavs = check_sounds(config)
-    check_audio(wavs, args.skip_audio)
+    check_audio(wavs, args.skip_audio, config.get('audio.card', None))
     check_camera(config)
     check_video_encoder()
     check_disk(config)

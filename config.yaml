@@ -43,6 +43,12 @@ alert:
 audio:
   volume: 80
   sound_path: "./sounds/"
+  # The sound card the deterrent plays to, by ALSA card id (aplay -l, or
+  # /proc/asound/cards). "Headphones" is the Pi 4's 3.5 mm jack. Named rather
+  # than left to ALSA's default, which on a Pi is HDMI — a missing card is a
+  # startup error, never a silent deterrent. null = ALSA's default device
+  # (a USB speaker set as default, or the legacy Coral).
+  card: "Headphones"
 
 storage:
   retention_days: 365
