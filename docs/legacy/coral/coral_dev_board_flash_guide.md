@@ -1,5 +1,13 @@
 # Coral Dev Board OS Flashing Guide
 
+> **Legacy.** The Coral Dev Board is no longer the target for this project — a
+> Raspberry Pi 4 is (see [DEPLOY.md](../../../DEPLOY.md)). Google has archived the
+> Coral software repositories, and Mendel is end-of-life. This guide is kept
+> because the code still supports `ai.target: edgetpu` and the board still
+> works. It has not been re-checked since the Pi became the target; links to
+> Google's download servers may have gone. Read [README.md](README.md) in this
+> directory first.
+
 A comprehensive step-by-step guide to flash a new operating system onto your Google Coral Dev Board.
 
 ## Table of Contents
