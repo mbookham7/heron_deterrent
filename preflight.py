@@ -4,8 +4,11 @@
 Run this on the board before starting the service. Every check prints PASS or
 FAIL; every failure prints the command that fixes it.
 
-    ./preflight.py               # all checks, plays a deterrent sound
-    ./preflight.py --skip-audio  # same, but stay quiet
+    venv/bin/python preflight.py               # all checks, plays a deterrent sound
+    venv/bin/python preflight.py --skip-audio  # same, but stay quiet
+
+Through the venv, not ./preflight.py: the shebang finds the system python3,
+which lacks the venv's packages and reports a healthy install as broken.
 
 Exit status is 0 only if every check passed. [WARN] lines do not fail the
 run, but each one names something worth fixing before the box is sealed.
@@ -87,7 +90,9 @@ def check_config():
         config = Config('config.yaml')
     except Exception as e:
         check('config', False, f"cannot load config.yaml: {e}",
-              "Run preflight from the repo root: cd ~/heron_deterrent && ./preflight.py")
+              "Run preflight from the repo root, through the venv:",
+              "  cd ~/heron_deterrent && venv/bin/python preflight.py",
+              "A 'No module named' error means the system Python ran it, not the venv.")
         return None
 
     from ai.model_loader import TARGETS
@@ -205,6 +210,56 @@ def check_sounds(config):
     return wavs
 
 
+def parse_asound_cards(text):
+    """{card index: (id, description)} from /proc/asound/cards, whose card
+    lines look like ' 2 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones'."""
+    cards = {}
+    for line in text.splitlines():
+        head, _, rest = line.partition(']:')
+        if '[' not in head or not head.split('[')[0].strip().isdigit():
+            continue
+        index, card_id = head.split('[', 1)
+        cards[int(index)] = (card_id.strip(), rest.split(' - ', 1)[-1].strip())
+    return cards
+
+
+def audio_route_verdict(card_id):
+    """'fail' if the sound went to HDMI, 'unknown' if nobody saw where it went,
+    else 'pass'. The deterrent plays to ALSA's default device, and on a Pi that
+    defaults to HDMI: aplay succeeds, every other check passes, and the speaker
+    on the 3.5 mm jack stays silent. No Pi in a filter house has a monitor."""
+    if card_id is None:
+        return 'unknown'
+    return 'fail' if 'hdmi' in card_id.lower() else 'pass'
+
+
+def _play_and_watch(cmd, timeout):
+    """Run an aplay command and see which card actually plays it, by watching
+    for 'state: RUNNING' in /proc/asound while it does. Returns
+    (returncode, stderr, card index or None)."""
+    import glob
+    import time
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    card = None
+    deadline = time.time() + 1.5
+    while card is None and proc.poll() is None and time.time() < deadline:
+        for status in glob.glob('/proc/asound/card*/pcm*p/sub*/status'):
+            try:
+                if 'RUNNING' in Path(status).read_text():
+                    card = int(Path(status).parts[3][len('card'):])
+                    break
+            except (OSError, ValueError):
+                continue
+        time.sleep(0.05)
+    try:
+        _, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    return proc.returncode, stderr.decode(errors='replace'), card
+
+
 def check_audio(wavs, skip_audio):
     if not shutil.which('aplay'):
         return check('audio', False, "aplay not found",
@@ -220,30 +275,51 @@ def check_audio(wavs, skip_audio):
     if listing.returncode != 0 or 'card' not in listing.stdout:
         return check('audio', False, "no ALSA playback device",
                      "Plug in the speaker, then check:  aplay -l",
-                     "On a Pi, force the 3.5mm jack:     sudo raspi-config nonint do_audio 1")
-
-    cards = [ln.split(':', 1)[1].strip() for ln in listing.stdout.splitlines()
-             if ln.startswith('card')]
-    if skip_audio or not wavs:
-        return check('audio', True, f"device present ({cards[0] if cards else '?'}), "
-                                    f"playback not tested (--skip-audio)")
+                     "If aplay itself errors, check /etc/asound.conf and ~/.asoundrc")
 
     try:
-        played = subprocess.run(['aplay', str(wavs[0])], capture_output=True, timeout=30)
+        cards = parse_asound_cards(Path('/proc/asound/cards').read_text())
+    except OSError:
+        cards = {}
+
+    # --skip-audio still checks WHERE sound would go, by playing one second of
+    # silence: a silent run should not mean an unchecked speaker route.
+    quiet = skip_audio or not wavs
+    if quiet:
+        what = "1 s of silence"
+        cmd = ['aplay', '-q', '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '2',
+               '-d', '1', '/dev/zero']
+    else:
+        what = wavs[0].name
+        cmd = ['aplay', '-q', str(wavs[0])]
+
+    try:
+        returncode, stderr, index = _play_and_watch(cmd, timeout=30)
     except subprocess.TimeoutExpired:
-        return check('audio', False, f"playing {wavs[0].name} hung for 30s",
+        return check('audio', False, f"playing {what} hung for 30s",
                      "The WAV may be malformed, or the device is blocked:",
-                     f"  file {wavs[0]}",
+                     f"  file {cmd[-1]}",
                      "  sudo fuser -v /dev/snd/*")
 
-    if played.returncode != 0:
+    if returncode != 0:
         return check('audio', False,
-                     f"device present but playing {wavs[0].name} failed",
-                     played.stderr.decode(errors='replace').strip()[:200],
+                     f"device present but playing {what} failed",
+                     stderr.strip()[:200],
                      "Test directly:  speaker-test -t wav -c 2")
-    return check('audio', True,
-                 f"played {wavs[0].name} on {cards[0] if cards else 'default'} "
-                 f"— did you hear it?")
+
+    card_id, desc = cards.get(index, (None, None))
+    verdict = audio_route_verdict(card_id)
+    if verdict == 'fail':
+        return check('audio', False,
+                     f"sound goes to HDMI ({desc}), not the speaker",
+                     "ALSA's default output is HDMI. Point it at the 3.5 mm jack:",
+                     "  ./setup.sh        # writes /etc/asound.conf",
+                     "See README, 'Sound output'. Then:  cat /etc/asound.conf")
+    where = desc if verdict == 'pass' else "an output that could not be identified"
+    if quiet:
+        return check('audio', True, f"default output is {where}; deterrent not played "
+                                    f"(--skip-audio)")
+    return check('audio', True, f"played {what} on {where} — did you hear it?")
 
 
 def _service_is_running():
@@ -281,7 +357,7 @@ def check_camera(config):
                       f"running heron-deterrent service{OFF}")
                 print(f"       {DIM}->{OFF} That is expected. To test the device itself:")
                 print(f"       {DIM}->{OFF}   sudo systemctl stop heron-deterrent "
-                      f"&& ./preflight.py")
+                      f"&& venv/bin/python preflight.py")
                 print(f"       {DIM}->{OFF} Or check the live feed and frame type: "
                       f"curl -s localhost:5000/api/system-status")
                 return True

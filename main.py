@@ -559,7 +559,8 @@ def main():
         # Missing model, missing sounds, label/model mismatch, no camera. These are
         # operator-fixable, so print the instruction rather than a traceback.
         print(f"\nSTARTUP FAILED\n\n{e}\n", file=sys.stderr)
-        print("Run ./preflight.py to check every dependency at once.\n", file=sys.stderr)
+        print("Run venv/bin/python preflight.py to check every dependency at once.\n",
+              file=sys.stderr)
         sys.exit(2)
 
     if os.getenv('START_WEB_UI', 'false').lower() == 'true':

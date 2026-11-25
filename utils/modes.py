@@ -213,4 +213,4 @@ def missing_model_files(modes: Dict[str, ModeConfig], target: str,
 
 def _format(errors: List[str]) -> str:
     return "Mode configuration is invalid:\n" + "\n".join(f"  - {e}" for e in errors) + \
-        "\n  Fix: edit config.yaml (modes:, frame_type:), then run ./preflight.py"
+        "\n  Fix: edit config.yaml (modes:, frame_type:), then run venv/bin/python preflight.py"
