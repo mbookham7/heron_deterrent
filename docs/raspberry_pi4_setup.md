@@ -1,423 +1,218 @@
-# Raspberry Pi 4 Setup Guide
+# Raspberry Pi 4 — from a blank card to a shell
 
-This guide covers setting up the Heron Deterrent System on a **Raspberry Pi 4**.
+This gets a Raspberry Pi 4 from a blank microSD card to an SSH session you can
+deploy into. The deploy itself — install, model, preflight, service — is
+[DEPLOY.md](../DEPLOY.md). Why things are the way they are is
+[README.md](../README.md).
 
-> The primary target platform is the **Coral Dev Board** (built-in Edge TPU, faster inference).
-> For that setup, return to the [main README](../README.md).
+The Raspberry Pi 4 is the only first-class target. (The Coral Dev Board is
+legacy: [docs/legacy/coral/](legacy/coral/README.md).)
+
+**What the build used, on 2026-11-25:** Raspberry Pi 4 Model B Rev 1.5 (8 GB),
+128 GB card, and the image `/etc/rpi-issue` calls "Raspberry Pi reference
+2026-10-06" — Raspberry Pi OS 13 "Trixie" (Debian 13), 64-bit, Python 3.13.5.
+Every command below ran on that Pi unless it says otherwise.
 
 ---
 
-## How Pi 4 Differs from Coral Dev Board
+## Step 1 — Flash the card
 
-| | Coral Dev Board | Raspberry Pi 4 |
+Use **Raspberry Pi Imager**. Choose **Raspberry Pi OS (64-bit)** and, in the
+customisation settings, set:
+
+| Setting | The build used | Notes |
 |---|---|---|
-| Edge TPU | Built-in (M.2) | None built-in |
-| AI inference | Edge TPU (~10 ms/frame) | CPU only (~200–400 ms/frame) |
-| TFLite model | `heron_edgetpu.tflite` | `heron_cpu_int8.tflite` |
-| OS | Mendel Linux | Raspberry Pi OS (Bookworm) |
-| Audio mixer | Varies | `PCM` or `Headphone` (3.5mm jack) |
-| Config flag | `ai.target: edgetpu` | `ai.target: cpu` |
+| Hostname | `heron-pi` | |
+| Username | `pi` | `heron-deterrent.service` assumes `pi`. Choose another and you edit the unit |
+| Password | set one | `sudo` will ask for it — Imager does not set up password-less sudo |
+| Wi-Fi | your network and country | |
+| SSH | enabled, password authentication | Imager's "public-key only" option, pasting the key from Step 3, should save the `ssh-copy-id` step. **Not tried** |
+| Time zone | Europe/London | The build's clock came up as `Europe/London` with NTP active (`timedatectl`) — unlike the old Coral, which ran on UTC |
 
-Because the Pi 4 has no Edge TPU, inference runs on the 4-core ARM CPU. Expect roughly 2–5 fps of inference throughput on a typical YOLOv8n int8 model. The system compensates by running at 5 fps capture and analysing only key frames from each clip.
+**Lite or desktop?** Nothing here needs a desktop, and in a sealed box it is
+only extra heat — so **Raspberry Pi OS Lite** is the natural choice. But be
+honest about what was tested: **the build used the desktop image** and then
+switched it to boot to the console (Step 5). Lite has not been tried. `setup.sh`
+installs everything the app needs from apt (`ffmpeg`, `alsa-utils`,
+`v4l-utils`, …), so it *should* work on Lite; on the desktop image most of
+those were already there.
 
----
-
-## Hardware
-
-| Component | Notes |
-|---|---|
-| Raspberry Pi 4 (2 GB RAM minimum, 4 GB recommended) | |
-| MicroSD card ≥ 16 GB (32 GB recommended) | Class 10 / A1 or better |
-| USB webcam 720p or higher | Or Pi Camera Module v2/v3 via CSI |
-| Powered USB speaker or 3.5mm amplified speaker | |
-| USB-C power supply 5V/3A | Official Pi PSU recommended |
-| Case with cooling | CPU runs warm during sustained inference |
+Imager applies these settings on first boot, from `user-data` and
+`network-config` files it writes to the card's boot partition.
 
 ---
 
-## Step 1 — Flash Raspberry Pi OS
+## Step 2 — First boot, and find it
 
-1. Download **Raspberry Pi Imager** from [raspberrypi.com/software](https://www.raspberrypi.com/software/)
-2. Choose **Raspberry Pi OS Lite (64-bit)** — the headless image is sufficient
-3. Click the gear icon in Imager to pre-configure:
-   - Hostname (e.g. `heron-pi`)
-   - SSH enabled
-   - Wi-Fi SSID and password
-   - Username and password (default: `pi`)
-4. Flash to MicroSD, insert into Pi, power on
-5. SSH in once the Pi has booted:
+Put the card in, power on, give it a minute or two. Then find its address —
+the router's list of connected devices is the most reliable way, or try
+`ping heron-pi.local` from a Mac.
 
-```bash
-ssh pi@heron-pi.local
-# or use the IP address if mDNS isn't working
-```
+If Ethernet is connected as well as Wi-Fi, the Pi gets an address on each.
+Either works; the Wi-Fi one is what it will have in the filter house.
 
 ---
 
-## Step 2 — System Configuration
+## Step 3 — Key-based SSH
+
+Everything after this is easier with a key — and a tool that drives the Pi
+remotely cannot type a password at all.
+
+On your laptop, once:
 
 ```bash
-# Run raspi-config to enable camera and set audio output
-sudo raspi-config
+ssh-keygen -t ed25519 -f ~/.ssh/heron_pi -N "" -C "heron-pi-deploy"
 ```
 
-Inside raspi-config:
-- **Interface Options → Camera** → Enable (if using Pi Camera Module via CSI)
-- **System Options → Audio** → select **Headphones** (3.5mm jack) or **HDMI**
-
-Or non-interactively:
+Then copy it to the Pi. **Do this in a normal terminal window** — it asks
+"are you sure you want to continue connecting?" and then for the Pi's
+password, and both need a real terminal:
 
 ```bash
-# Enable CSI camera
-sudo raspi-config nonint do_camera 0
-
-# Set audio to 3.5mm jack (1 = headphones, 2 = HDMI, 0 = auto)
-sudo raspi-config nonint do_audio 1
+ssh-copy-id -i ~/.ssh/heron_pi.pub pi@<pi-ip>
 ```
+
+It ends with `Number of key(s) added: 1`. From then on:
+
+```bash
+ssh -i ~/.ssh/heron_pi -o IdentitiesOnly=yes pi@<pi-ip>
+```
+
+> On the build, `ssh-copy-id` first failed with `Host key verification failed`.
+> That was *not* a changed key — it was a host SSH had never seen, run from a
+> place with no terminal to answer the first-contact question. Trusting the
+> key explicitly fixed it:
+>
+> ```bash
+> ssh-keyscan -t ed25519 <pi-ip> | ssh-keygen -lf -       # note the fingerprint
+> ssh-keyscan -t ed25519 <pi-ip> >> ~/.ssh/known_hosts
+> ```
+>
+> To check the fingerprint is really the Pi's, compare it with
+> `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on the Pi's own
+> console. Re-flashing makes a new host key, so expect the warning again after
+> a re-flash.
 
 ---
 
-## Step 3 — Install System Dependencies
+## Step 4 — Check what you have
 
 ```bash
-sudo apt-get update && sudo apt-get upgrade -y
-
-sudo apt-get install -y \
-    python3-pip \
-    python3-venv \
-    python3-opencv \
-    alsa-utils \
-    v4l-utils \
-    libportaudio2 \
-    libatlas-base-dev \
-    libjpeg-dev \
-    libopenjp2-7 \
-    sqlite3 \
-    git
-```
-
----
-
-## Step 4 — Clone the Repository
-
-```bash
-cd ~
-git clone https://github.com/mbookham7/heron_deterrent.git
-cd heron_deterrent
-```
-
----
-
-## Step 5 — Create a Virtual Environment and Install Dependencies
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### Install tflite-runtime
-
-The correct method depends on your Python version:
-
-```bash
+cat /proc/device-tree/model; echo
+grep PRETTY /etc/os-release
 python3 --version
+free -h | sed -n 2p
+df -h /
+lsusb                                    # the camera: 32e4:9230 HD USB Camera
+vcgencmd measure_temp; vcgencmd get_throttled
+sudo -n true && echo "sudo: no password" || echo "sudo: needs a password"
 ```
 
-**Python 3.9** (Raspberry Pi OS Bullseye):
+On the build:
 
-```bash
-pip install https://github.com/google-coral/pycoral/releases/download/v2.0.0/tflite_runtime-2.5.0.post1-cp39-cp39-linux_aarch64.whl
+```
+Raspberry Pi 4 Model B Rev 1.5
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+Python 3.13.5
+Mem:           7.6Gi       426Mi       6.6Gi ...
+/dev/mmcblk0p2  117G  5.2G  107G   5% /
+Bus 001 Device 003: ID 32e4:9230 HD USB Camera HD USB Camera
+temp=55.5'C
+throttled=0x0
+sudo: needs a password
 ```
 
-**Python 3.10 or 3.11** (Raspberry Pi OS Bookworm — the current default):
-
-```bash
-pip install tflite-runtime
-```
-
-Verify it installed:
-
-```bash
-python3 -c "import tflite_runtime.interpreter; print('tflite-runtime OK')"
-```
+`lsusb` also lists `2109:3431 VIA Labs, Inc. Hub` — that is the Pi's own
+built-in USB hub, not a powered hub you added. A powered hub for the camera
+shows up as a second hub.
 
 ---
 
-## Step 6 — Add Your Model
+## Step 5 — Boot to the console, not the desktop
 
-The Pi 4 uses the CPU model. Note that the Coral currently uses the same one —
-the Edge TPU model detects nothing (see README, "Edge TPU status").
+If you flashed the desktop image:
 
 ```bash
-# On a machine with a GPU:
-yolo export model=best.pt format=tflite int8=True imgsz=640 data=your_data.yaml
-# produces best_saved_model/best_int8.tflite
-scp best_saved_model/best_int8.tflite \
-    pi@heron-pi.local:~/heron_deterrent/models/heron_cpu_int8.tflite
+systemctl get-default                    # graphical.target = desktop
+sudo systemctl set-default multi-user.target && sudo reboot
 ```
 
-The filename matters: `ai.target: cpu` looks for exactly
-`models/heron_cpu_int8.tflite`. There is no `model_path` key to point elsewhere.
+Three reasons, all found on the build:
+
+- **It deletes the sound fix.** The desktop's volume plugin removes
+  `~/.asoundrc` at login. (`setup.sh` uses `/etc/asound.conf` for that reason,
+  so this no longer breaks sound — but there is no reason to keep the plugin.)
+- **Heat.** It runs a window manager and a login manager in a sealed box.
+- **Nothing needs it.** The dashboard is a web page.
+
+After this, `pipewire` and `wireplumber` still start for `pi` (most likely on
+SSH login). The deterrent plays through ALSA directly, so they do not affect
+it — but that is an observation, not something tested exhaustively.
+
+Now go to **[DEPLOY.md](../DEPLOY.md)**, step 2.
 
 ---
 
-## Step 7 — Add Deterrent Sounds
+## In the box
+
+The Pi goes into a sealed IP-rated box inside the filter house: bare board on
+standoffs, heatsinks on the SoC, desiccant, camera on a powered hub. Why each
+of those, and the temperatures measured on the bench, are in the README under
+"The filter-house enclosure" and "Why the camera goes through a powered hub".
+
+**Nothing has been measured inside the box yet.** On the bench, in open air, it
+reached 68.6 °C after a few seconds of back-to-back inference — near
+`preflight`'s 70 °C warning before any enclosure. Check once it is in:
 
 ```bash
-mkdir -p sounds
-# Copy your .wav files
-scp /path/to/sounds/*.wav pi@heron-pi.local:~/heron_deterrent/sounds/
+watch -n 5 'vcgencmd measure_temp; vcgencmd get_throttled'
 ```
+
+`throttled=0x0` is what you want. Any other value: the bits are decoded by
+`preflight`'s `cpu temp` check.
 
 ---
 
-## Step 8 — Configure for Raspberry Pi 4
+## Pi-specific troubleshooting
 
-Edit `config.yaml`. The critical Pi-specific settings are:
+### `pip install tflite-runtime` — "No matching distribution found"
 
-```yaml
-ai:
-  target: cpu                                # The only hardware switch
-  alert_vote_k: 3
-  alert_vote_m: 5
-  num_threads: 4                             # Use all 4 cores
-  labels:
-    0: "heron"                               # Single-class model — exactly one entry
-
-storage:
-  max_media_gb: 15.0                         # Clips a model looked at
-  max_motion_gb: 5.0                         # Unclassified night clips — separate cap
-
-system:
-  frame_rate: 5                              # Keep low — CPU inference is slower
-  camera_device_id: 0
-  resolution:
-    width: 640
-    height: 480
-```
-
-There is no `active_hours`: the system runs round the clock and decides day or
-night from the frames themselves. Thresholds and the deterrent switch live per
-mode under `modes:` — see README "Day and night". The storage caps above assume
-a 32 GB or larger card; `./preflight.py` fails if they cannot fit.
-
-The Pi goes into a sealed box, so check the board's temperature after it has
-been in there a while — `./preflight.py` reports it, along with any throttling
-since boot:
+Expected on Python 3.13: there is no build. Use LiteRT, which `setup.sh`
+installs:
 
 ```bash
-vcgencmd measure_temp; vcgencmd get_throttled    # throttled=0x0 is what you want
+venv/bin/pip install ai-edge-litert
+venv/bin/python -c "from ai_edge_litert.interpreter import Interpreter; print('OK')"
 ```
 
-**Twilio credentials** — use environment variables, not the config file:
+### `libatlas-base-dev` will not install
+
+Expected on Trixie: Debian 13 removed it. `apt-cache policy libatlas-base-dev`
+shows `Candidate: (none)`. Nothing needs it — numpy's wheel
+brings its own BLAS. Do not hand-install the old Bookworm `.deb`.
+
+### Lots of `/dev/video*` devices
+
+Normal. `/dev/video10`–`31` are the Pi's own video codec and ISP. The USB
+camera was `/dev/video0` (and `video1`, its metadata node) on the build:
 
 ```bash
-export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export TWILIO_AUTH_TOKEN="your_auth_token"
-export TWILIO_FROM_NUMBER="+441234567890"
-export TWILIO_TO_NUMBER="+441234567890"
-```
-
----
-
-## Step 9 — Test Camera and Audio
-
-```bash
-source venv/bin/activate
-
-# Check camera is detected
 v4l2-ctl --list-devices
-
-# Capture a test frame
-python3 -c "
-import cv2
-cap = cv2.VideoCapture(0)
-ret, frame = cap.read()
-cv2.imwrite('test_frame.jpg', frame)
-cap.release()
-print('OK' if ret else 'FAILED — check camera_device_id in config.yaml')
-"
-
-# Test speaker
-aplay -l                        # list audio devices
-speaker-test -t wav -c 2       # play test tone
-aplay sounds/your_sound.wav    # test a deterrent file
 ```
 
-If `amixer set Master` fails (common on Pi OS), the audio player automatically tries `PCM` and `Headphone` as fallbacks. You can confirm which control your device uses:
+(The old `vcgencmd get_camera` and `raspi-config` camera option are for the
+ribbon-cable Pi Camera Module. A USB camera needs neither.)
 
-```bash
-amixer           # lists all controls and their names
-```
+### Silent speaker
 
----
+See README, "Sound output", and DEPLOY step 6. In short: ALSA defaults to HDMI;
+`/etc/asound.conf` must name the `Headphones` card; `preflight` cannot tell;
+headphones in the jack tell you in seconds.
 
-## Step 10 — Run Manually First
+### "What happened before it rebooted?"
 
-```bash
-source venv/bin/activate
-START_WEB_UI=true python main.py
-```
-
-Open the dashboard at `http://heron-pi.local:5000` (or use the Pi's IP address).
-
-Watch the log for startup errors:
-
-```bash
-tail -f heron_deterrent.log
-```
-
-You should see:
-```
-INFO  Model loaded on CPU
-INFO  YOLO Detector initialized:
-INFO    - Input size: 640x640
-INFO    - Quantized: True
-INFO  Loaded N sound files
-INFO  System started successfully
-```
-
----
-
-## Step 11 — Install as a Systemd Service
-
-```bash
-# Edit the service file to match Pi paths
-nano heron-deterrent.service
-```
-
-Change `User` and `WorkingDirectory` to match your Pi setup:
-
-```ini
-[Service]
-User=pi
-WorkingDirectory=/home/pi/heron_deterrent
-ExecStart=/home/pi/heron_deterrent/venv/bin/python main.py
-Environment="START_WEB_UI=true"
-
-# Uncomment and fill in Twilio credentials:
-# Environment="TWILIO_ACCOUNT_SID=ACxxxx"
-# Environment="TWILIO_AUTH_TOKEN=xxxx"
-# Environment="TWILIO_FROM_NUMBER=+441234567890"
-# Environment="TWILIO_TO_NUMBER=+441234567890"
-```
-
-Install and enable:
-
-```bash
-sudo cp heron-deterrent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable heron-deterrent
-sudo systemctl start heron-deterrent
-
-# Verify
-sudo systemctl status heron-deterrent
-sudo journalctl -u heron-deterrent -f
-```
-
-The service will now start automatically on every boot and restart itself if it crashes.
-
----
-
-## Optional: Using a Coral USB Accelerator
-
-If you have a [Coral USB Accelerator](https://coral.ai/products/accelerator/), you can plug it into a Pi 4 USB 3.0 port for Edge TPU speed. You'll need the Edge TPU compiled model.
-
-```bash
-# Install Edge TPU runtime for the USB accelerator
-echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" \
-    | sudo tee /etc/apt/sources.list.d/coral-edgetpu.list
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-sudo apt-get update
-sudo apt-get install -y libedgetpu1-std python3-pycoral
-
-# Compile your model for Edge TPU (do this on a desktop machine)
-# edgetpu_compiler best_int8.tflite
-# Copy best_int8_edgetpu.tflite to the Pi
-```
-
-Then update `config.yaml`:
-
-```yaml
-ai:
-  target: edgetpu
-```
-
-Place the compiled model at `models/heron_edgetpu.tflite`. Be aware the current
-compiled model is broken — validate detection scores on real images before
-trusting it, not just that the file loads.
-
----
-
-## Performance Expectations
-
-| Config | Inference speed | Notes |
-|---|---|---|
-| Pi 4 CPU, 4 threads, YOLOv8n int8 | ~200–400 ms | Suitable for 5 fps capture |
-| Pi 4 + Coral USB Accelerator | ~10–30 ms | Near Coral Dev Board performance |
-| Coral Dev Board (built-in TPU) | ~5–10 ms | Fastest — recommended primary target |
-
-At 5 fps capture with a 5-second clip and 5 key frames analysed, each detection event takes around 1–2 seconds to process on CPU — well within the time a heron would spend at a pond.
-
----
-
-## Troubleshooting
-
-### `tflite_runtime` ImportError
-
-```bash
-python3 -c "import tflite_runtime.interpreter"
-# If this fails:
-python3 --version   # check exact version
-pip install tflite-runtime   # for Python 3.10+
-# or use the Google wheel URL above for Python 3.9
-```
-
-### Slow inference / high CPU temperature
-
-- Reduce `frame_rate` to `3` in `config.yaml`
-- Add a heatsink and fan — sustained inference generates significant heat
-- Consider a Coral USB Accelerator
-
-### Camera not found
-
-```bash
-# USB webcam
-v4l2-ctl --list-devices
-ls /dev/video*
-
-# Pi Camera Module (CSI)
-vcgencmd get_camera
-# Should show: supported=1 detected=1
-# If detected=0, re-enable in raspi-config and reboot
-```
-
-### Audio: `amixer set Master` fails
-
-```bash
-amixer    # note the control names listed
-# Common Pi controls: PCM, Headphone, Master
-# The audio player tries all three automatically
-```
-
-### Service won't start
-
-```bash
-sudo journalctl -u heron-deterrent -n 50
-# Look for: model not found, camera not opened, permission denied
-```
-
-Common causes:
-- `WorkingDirectory` in the service file doesn't match where you cloned the repo
-- Virtual environment path is wrong in `ExecStart`
-- Model file missing from `models/`
-- No WAV files in `sounds/`
-
----
-
-## Back to Main README
-
-[README.md](../README.md) — Coral Dev Board setup (primary platform)
+The system journal is in RAM only on Raspberry Pi OS
+(`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`), so it is
+empty after a reboot. The app's `~/heron_deterrent/heron_deterrent.log`
+survives. Making the journal persistent would mean more SD card writes; it has
+not been changed.

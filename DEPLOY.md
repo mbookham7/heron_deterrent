@@ -1,59 +1,84 @@
 # DEPLOY — pond checklist
 
-Ordered steps from a flashed OS to a running service, on either board.
-Tick straight down. Rollback is at the bottom.
+Ordered steps from a flashed Raspberry Pi to a running service. Tick straight
+down. Rollback is at the bottom.
+
+Flashing the card comes first: [docs/raspberry_pi4_setup.md](docs/raspberry_pi4_setup.md).
+For *why* any of this is the way it is, see [README.md](README.md).
+
+**Every command here ran on the build Pi** (Pi 4 Model B 8 GB, Raspberry Pi OS 13
+"Trixie", Python 3.13.5, user `pi`) on 2026-11-25, except where a step says it
+was not. That build was on the bench — not in the box, not at the pond, not at
+night.
 
 **Reference values for this build:** `ai.target: cpu`,
 `models/heron_cpu_int8.tflite`, `deter_threshold: 0.90` / `alert_threshold: 0.95`,
-service `heron-deterrent`. Coral user is `mendel`, Pi user is `pi`.
+service `heron-deterrent`, user `pi`, SSH key `~/.ssh/heron_pi`.
 
 ---
 
 ## 0. Before you leave the house
 
-- [ ] Board, **powered** speaker, USB webcam, SD card, power supply, cables
-- [ ] Laptop can reach the board (know its IP, or bring an Ethernet cable)
+- [ ] Pi 4, **powered** speaker (3.5 mm lead), ELP camera, **powered USB hub**
+      for the camera, SD card, official 5 V / 3 A supply, cables
+- [ ] The sealed box: standoffs, heatsinks on the SoC, **desiccant** — not the
+      official Pi case (README, "The filter-house enclosure")
+- [ ] Laptop can SSH to the Pi with a key (step 1) — sort this out at home, not
+      at the pond
 - [ ] `models/heron_cpu_int8.tflite` on your laptop — **it is gitignored, a clone
       does not include it**
 - [ ] A real `.wav` if you want better than the built-in startle burst
-- [ ] Mounting: camera facing the water, speaker aimed at the landing spot.
-      Close to the water beats a wide view — distant birds are missed.
+- [ ] Mounting: camera **1.5–4.5 m from where the heron stands, nearer 1.5 m**,
+      speaker aimed at the landing spot. Distant birds are missed — README,
+      "Mounting distance", has the arithmetic
+- [ ] Camera dome: check the foam gasket inside sits flush against the dome
+      (README, "The dome: IR washout")
 
 ---
 
-## 1. Get a shell on the board
+## 1. Get a shell on the Pi
 
 ```bash
-ssh mendel@<board-ip>          # Coral
-ssh pi@<board-ip>              # Pi
+ssh -i ~/.ssh/heron_pi -o IdentitiesOnly=yes pi@<pi-ip>
 ```
 
-**The board is on DHCP, so the address moves.** If it stops answering on the
-address you wrote down, find it again (`ping`, or check the router) before
-assuming a fault. When it does move, SSH refuses the new address with
-`Host key verification failed` — that is expected. Confirm it is the same board
-rather than blindly clearing the entry: the host key should be *identical* to
-the one already trusted for the old address.
+If the key is not on the Pi yet (you set a password in Imager), install it once
+**from a normal terminal** — it prompts for the Pi's password:
 
 ```bash
-ssh-keyscan -t ed25519 <new-ip>            # compare against ~/.ssh/known_hosts
+ssh-keygen -t ed25519 -f ~/.ssh/heron_pi -N "" -C "heron-pi-deploy"   # only if you have no key
+ssh-copy-id -i ~/.ssh/heron_pi.pub pi@<pi-ip>                          # want: Number of key(s) added: 1
 ```
 
-**No answer on port 22?** If the board replies to `ping` but refuses port 22,
-`sshd` is probably disabled rather than the network being broken. You need local
-access once: connect the **micro-USB** port (the small one, not either USB-C) and
-open a serial console at 115200 (macOS needs the Silicon Labs CP210x driver):
+It has to be a real terminal. Run from a tool with no terminal attached (such
+as the `!` prefix in Claude Code), the first-contact host key question cannot be
+answered and SSH fails with `Host key verification failed` — on a host it has
+never seen, not one that changed. The password prompt fails the same way.
+
+**The Pi is on DHCP, so the address can move.** If it stops answering, find it
+again (`ping`, or the router's device list) before assuming a fault. When it
+does move, SSH refuses the new address with `Host key verification failed` —
+expected. Confirm it is the same Pi rather than blindly clearing the entry: the
+host key should be *identical* to the one already trusted.
 
 ```bash
-ls /dev/cu.*
-screen /dev/cu.SLAB_USBtoUART 115200      # login: mendel / mendel
-sudo systemctl enable --now ssh            # Debian-based: ssh, not sshd
-ip addr show                               # note the real IP
+ssh-keyscan -t ed25519 <new-ip> | ssh-keygen -lf -      # compare the fingerprint
 ```
+
+A **re-flashed** Pi has a new host key, so a mismatch after re-flashing is
+expected too.
+
+**Two addresses.** With Ethernet and Wi-Fi both connected, the Pi has one on
+each (the build had `eth0` and `wlan0`), and SSH and the dashboard answer on
+both. `ip -4 -br addr` lists them. Note the Wi-Fi one — that is what the filter
+house will have.
+
+**`sudo` asks for a password** on a Pi set up with Imager. Steps marked
+**(sudo)** need you at a real terminal for that reason.
 
 ---
 
-## 2. Install
+## 2. Install (sudo)
 
 ```bash
 git clone https://github.com/mbookham7/heron_deterrent.git
@@ -61,13 +86,31 @@ cd heron_deterrent
 ./setup.sh
 ```
 
-`setup.sh` installs system packages, creates the venv (with
-`--system-site-packages` on Mendel — required), installs Python dependencies,
-and writes a default `config.yaml` if none exists.
+`setup.sh`:
 
-**On Mendel, never `pip install tflite-runtime`.** The system package
-(`python3-tflite-runtime` 2.5.0.post1) is version-matched to `libedgetpu`; pip's
-newer build segfaults when the Edge TPU delegate constructs an Interpreter.
+- installs `python3-venv`, `python3-pip`, `git`, `ffmpeg`, `alsa-utils`,
+  `v4l-utils`, `sqlite3`. On the build image all but `sqlite3` were already
+  there
+- writes **`/etc/asound.conf`** so sound goes to the 3.5 mm jack — without it
+  the deterrent plays to HDMI and is silent (README, "Sound output")
+- creates a plain venv and installs `requirements.txt` (about 40 s, all
+  prebuilt wheels) plus **`ai-edge-litert`**, the TFLite runtime
+- creates `models/`, `sounds/`, `media/`, `data/`
+- warns if the Pi boots to the desktop
+
+Two things it deliberately does **not** do, because they fail on Trixie:
+
+- `pip install tflite-runtime` — there is no version for Python 3.13
+  (`from versions: none`)
+- `apt-get install libatlas-base-dev` — removed in Debian 13
+  (`Candidate: (none)`). numpy brings its own BLAS; nothing replaces it
+
+If the Pi boots to the desktop, switch it to the console now — the desktop is
+heat in a sealed box and nothing needs it:
+
+```bash
+sudo systemctl set-default multi-user.target && sudo reboot
+```
 
 ---
 
@@ -76,8 +119,19 @@ newer build segfaults when the Edge TPU delegate constructs an Interpreter.
 From your laptop:
 
 ```bash
-scp models/heron_cpu_int8.tflite <user>@<board-ip>:~/heron_deterrent/models/
-scp my_heron_call.wav            <user>@<board-ip>:~/heron_deterrent/sounds/
+scp -i ~/.ssh/heron_pi models/heron_cpu_int8.tflite pi@<pi-ip>:~/heron_deterrent/models/
+scp -i ~/.ssh/heron_pi my_heron_call.wav            pi@<pi-ip>:~/heron_deterrent/sounds/
+```
+
+If `scp` says `dest open "heron_deterrent/models/": Failure`, the directory does
+not exist — `setup.sh` has not run. `models/` is gitignored, so a fresh clone
+has none.
+
+Check the copy arrived intact — the two hashes must match:
+
+```bash
+shasum -a 256 models/heron_cpu_int8.tflite                       # laptop
+ssh -i ~/.ssh/heron_pi pi@<pi-ip> 'sha256sum heron_deterrent/models/heron_cpu_int8.tflite'
 ```
 
 The repo already ships `sounds/startle_default.wav`, so the sounds copy is
@@ -91,19 +145,23 @@ optional — but the model copy is not. Without it, startup fails.
 nano config.yaml
 ```
 
-- [ ] `ai.target: cpu` — **use `cpu` on the Coral too.** The `edgetpu` model
-      detects nothing (see README, "Edge TPU status")
-- [ ] `system.camera_device_id: 0` — check with `ls /dev/video*`
+- [ ] `ai.target: cpu`
+- [ ] `system.camera_device_id: 0` — `v4l2-ctl --list-devices` shows which
+      `/dev/video*` belongs to the camera. The Pi has a dozen `/dev/video*`
+      nodes of its own (the codec and ISP); the USB camera was `video0` on the
+      build
+- [ ] `system.resolution` 640×480 — leave it. It fixes the image domain of every
+      clip you collect (README, "Capture resolution")
 - [ ] No `system.active_hours` — it is gone; the system runs round the clock and
       branches on frame type. A leftover block is a startup error.
 - [ ] `modes.<mode>.deterrent` — the **only** switch for the sound, and `false`
       in every mode as shipped. Turning the sound on is `modes.day.deterrent:
       true`; a motion-only mode (`model: null`) with `deterrent: true` refuses
       to start
-- [ ] `storage.max_media_gb` + `storage.max_motion_gb` (15 + 5 GB) — sized for
-      a Pi's card. **On Coral, check `df -h /home`: it is a separate 2 GB
-      partition — bring them down to ~0.7 + 0.3.** Preflight fails if they
-      cannot fit
+- [ ] `audio.volume` — 80 as shipped, which is −17.3 dB on the jack, not "80%
+      loud" (README, "Sound output")
+- [ ] `storage.max_media_gb` + `storage.max_motion_gb` (15 + 5 GB) — need a
+      32 GB card or larger. Preflight fails if they cannot fit
 - [ ] `alert.sms_enabled: false` unless you have done step 5
 - [ ] `collect_mode.enabled` — `false` normally. Set `true` only for a
       data-collection run, and read the storage warning in step 10 first: it
@@ -112,7 +170,9 @@ nano config.yaml
 
 ---
 
-## 5. SMS — skip if you have no Twilio account
+## 5. SMS — skip if you have no Twilio account (sudo)
+
+Not exercised on the Pi — there is no Twilio account yet.
 
 ```bash
 sudo install -m 600 -o root -g root /dev/null /etc/heron-deterrent.env
@@ -139,36 +199,50 @@ cd ~/heron_deterrent
 venv/bin/python preflight.py          # NOT ./preflight.py — see below
 ```
 
-**Always run it through the venv.** `./preflight.py` uses the `#!/usr/bin/env
-python3` shebang, which on Mendel finds the *system* Python — and that has no
-PyYAML and no Flask. It fails at the first check with:
+**Always run it through the venv.** `./preflight.py` runs the system Python,
+which has none of the venv's packages. On the Pi it gets as far as the config
+and then reports, on a perfectly healthy install:
 
 ```
-[FAIL] config       cannot load config.yaml: No module named 'yaml'
-       -> Run preflight from the repo root: cd ~/heron_deterrent && ./preflight.py
+[FAIL] model        heron_cpu_int8.tflite will not load on target 'cpu'
+[FAIL] camera       opencv not installed
 ```
 
-That hint is misleading: the repo root is not the problem, the interpreter is.
-`venv/bin/python preflight.py` (or `source venv/bin/activate` first) fixes it.
+(preflight's own fix hints still say `./preflight.py` — ignore that part.)
 
-**Listen for the speaker.** The audio check plays a real WAV; if you hear
-nothing, the deterrent will be silent no matter what the check says about the
-device being present. Running remotely, where nobody is in the room to hear it?
-Use `--skip-audio` and treat the speaker as unverified — the check can only
-prove the device exists, never that sound came out of it.
+**Listen for the speaker.** The audio check plays a real WAV. **It passes even
+when the sound is going to HDMI**, and it names the first card in the list
+(`vc4hdmi0`) rather than the one that played — so its PASS proves nothing about
+the speaker. Only your ears do. To see which output actually played:
+
+```bash
+aplay -q sounds/startle_default.wav & sleep 0.4
+head -1 /proc/asound/card*/pcm0p/sub0/status      # want the Headphones card (card2 on the build) RUNNING
+```
+
+If the jack is `RUNNING` and you hear nothing, it is the speaker side: is it
+powered, is its own volume up, is the lead good? Headphones plugged into the
+jack split "Pi" from "speaker" in seconds — that is how the build found its
+silent speaker.
+
+Running remotely, where nobody can hear? Use `--skip-audio` and treat the
+speaker as unverified.
 
 Every failure prints the command that fixes it. Do not continue until you see:
 
 ```
-All 8 checks passed.
+All 13 checks passed.
 ```
+
+(**11** if the service is already running — see below. The number is the count
+of checks that ran, so it varies; what matters is no FAILED.)
 
 Two things preflight cannot see when run by hand:
 
 - **The camera, if the service is already running** — only one process can hold
   `/dev/video0`, so the check reports `[skip] camera ... held by the running
-  service`. That is not a fault. For a full camera test:
-  `sudo systemctl stop heron-deterrent && ./preflight.py`
+  heron-deterrent service`. That is not a fault. For a full camera test:
+  `sudo systemctl stop heron-deterrent && venv/bin/python preflight.py`
 - **`/etc/heron-deterrent.env`** — only the service reads it. `export` the
   variables in your shell if you want to verify SMS manually.
 
@@ -180,30 +254,29 @@ Two things preflight cannot see when run by hand:
 START_WEB_UI=true venv/bin/python main.py
 ```
 
-**Not `python main.py`.** On Mendel `/usr/bin/python` is Python **2.7.16**, so
-that command dies immediately on the first type annotation:
+On the build this step was skipped and the service (step 8) ran the identical
+command; the lines below are from that service's log on the Pi. Expect, within
+a couple of seconds:
 
 ```
-def __init__(self, config_path: str = "config.yaml"):
-                              ^
-SyntaxError: invalid syntax
-```
-
-Expect, within a couple of seconds:
-
-```
-Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3 float32 | output=1x5x8400
+Video encoder: /usr/bin/ffmpeg with libx264 (preset veryfast)
 Mode day: model=heron deter=0.9 alert=0.95 record=0.3, silent, cooldown 10s
 Mode ir: motion-only (no model), silent, cooldown 45s
 Mode dark: motion-only (no model), silent, cooldown 45s
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+Model loaded: heron_cpu_int8.tflite | target=cpu | backend=CPU (4 threads) | input=1x640x640x3 float32 | output=1x5x8400
 Detector ready: input 640x640 float32 | classes=1 | confidence>=0.9 | iou=0.45
 day: vote=3/5 anchor_floor=0.9
 Loaded 1 deterrent sound(s): startle_default.wav
 Camera 0 open at 640x480
 System started successfully
-Frame type: startup -> day                              <- ~2 s later; or ir / dark at night
+Motion detected (establishing)                          <- motion before the frame type settles is still recorded
+Frame type: startup -> day                              <- ~2 s later (up to ~26 s after a cold boot); ir / dark at night
 Mode is now day: model=heron ...
 ```
+
+The `XNNPACK delegate` line is LiteRT announcing its CPU backend — normal, not
+an error.
 
 With `collect_mode.enabled: true` the detector's floor drops — this is
 correct, not a fault:
@@ -214,12 +287,12 @@ day: vote=3/5 anchor_floor=0.3
 COLLECT MODE ON: recording day events above 0.3
 ```
 
-- [ ] Open `http://<board-ip>:5000` — dashboard loads, live feed moves, the
+- [ ] Open `http://<pi-ip>:5000` — dashboard loads, live feed moves, the
       mode pill shows Day (or IR night / Dark night)
-- [ ] Walk in front of the camera → journal shows `Motion detected (day)`.
+- [ ] Walk in front of the camera → the log shows `Motion detected (day)`.
       At night it shows `Motion detected (ir)` then
       `Motion (motion-only mode, raw=ir) — recording unclassified`, and no
-      inference runs
+      inference runs (not yet seen on the Pi — the build never ran at night)
 - [ ] Press **Test Speaker** on the dashboard → you hear the sound. This is a
       manual test and plays in every mode. Automatic firing is governed only
       by `modes.<mode>.deterrent`; when that is `false` a confident heron logs
@@ -244,54 +317,80 @@ cannot validate `deter_threshold`. Since only 1 of the 44 stock positives
 clears 0.95, a genuine heron clip will usually come back `unknown` here even
 though the model is working perfectly.
 
+(Both traps were found on the Coral; Test Upload has not been run on the Pi.)
+
 `Ctrl-C` when satisfied.
 
 ---
 
-## 8. Install as a service
+## 8. Install as a service (sudo)
 
-Coral users skip the edit; the unit already targets `mendel`.
+The unit runs as `pi` from `/home/pi/heron_deterrent`. If you chose a different
+username in Imager, edit `User`, `Group` and both paths in
+`heron-deterrent.service` first.
+
+From your laptop, in one go — it asks for the Pi's password once:
 
 ```bash
-# Raspberry Pi only: change mendel -> pi in User, Group and both paths
-nano heron-deterrent.service
-
-sudo cp heron-deterrent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable heron-deterrent
-sudo systemctl start heron-deterrent
-sleep 10
-systemctl status heron-deterrent
+ssh -t -i ~/.ssh/heron_pi pi@<pi-ip> 'cd ~/heron_deterrent && sudo cp heron-deterrent.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now heron-deterrent && sleep 10 && systemctl is-active heron-deterrent'
 ```
 
-- [ ] `Active: active (running)`
-- [ ] `sudo journalctl -u heron-deterrent -f` shows the startup lines from step 7
+On the build this printed:
+
+```
+Created symlink '/etc/systemd/system/multi-user.target.wants/heron-deterrent.service' → '/etc/systemd/system/heron-deterrent.service'.
+active
+```
+
+- [ ] `active`
+- [ ] `journalctl -u heron-deterrent -f` shows the startup lines from step 7
+      (`pi` can read the journal without sudo — it is in the `adm` group)
 - [ ] Dashboard still responds on `:5000`
+- [ ] **Speaker, through the service itself.** This plays via the running
+      service — its user, its sound device, its volume — so it is the test that
+      counts:
+
+```bash
+curl -s -X POST http://localhost:5000/api/trigger-deterrent     # {"success":true}, and you hear it
+```
+
+**Do not trust "active" without looking.** On the build, an earlier report of
+`active` turned out to have come from somewhere other than the Pi — the unit
+file was not even installed. `systemctl status heron-deterrent` on the Pi
+itself is the check.
 
 ---
 
-## 9. Prove it survives
+## 9. Prove it survives (sudo)
 
 ```bash
 # Restart on crash
-sudo kill -9 $(systemctl show -p MainPID --value heron-deterrent)
-sleep 15
-systemctl is-active heron-deterrent          # expect: active
+ssh -t -i ~/.ssh/heron_pi pi@<pi-ip> 'OLD=$(systemctl show -p MainPID --value heron-deterrent); sudo kill -9 $OLD; sleep 15; echo "old pid $OLD -> new pid $(systemctl show -p MainPID --value heron-deterrent)"; systemctl is-active heron-deterrent'
 
 # Restart on reboot
-sudo reboot
-# wait, then from your laptop:
-ssh <user>@<board-ip> 'systemctl is-active heron-deterrent'
+ssh -t -i ~/.ssh/heron_pi pi@<pi-ip> 'sudo reboot'
+# wait, then:
+ssh -i ~/.ssh/heron_pi pi@<pi-ip> 'uptime -s; systemctl is-active heron-deterrent'
 ```
 
-The Coral is back on the network in about **25 seconds**, not 90 — quick enough
-that an immediate reconnect can succeed *before* the board has actually gone
-down, making a failed reboot look like a passed one. Confirm with `uptime -s`
-that the boot time is what you expect before trusting the result.
+**Check `uptime -s` moved** before believing a reboot test — a quick reconnect
+can reach the board before it has actually gone down. On the build, the
+service was `active` 3–6 s after boot.
+
+The journal **does not survive a reboot** on the Pi (`Storage=volatile`), so
+`journalctl -b -1` finds nothing. To confirm the `kill -9` restart after the
+fact, read the app's own log, which does survive:
+
+```bash
+grep -E "Initializing Heron|System started successfully" ~/heron_deterrent/heron_deterrent.log | tail
+```
 
 - [ ] Survives `kill -9` (systemd waits 10 s, then restarts)
 - [ ] Survives a reboot
 - [ ] Dashboard reachable after reboot
+- [ ] `/etc/asound.conf` still there, and the speaker still plays (step 8's
+      `curl`). The per-user `~/.asoundrc` did **not** survive the build's first
+      reboot — that is why setup writes the system-wide file
 
 If it fails 5 times in 2 minutes systemd gives up deliberately, so the fault is
 visible in `systemctl status` instead of scrolling past in the journal.
@@ -303,10 +402,11 @@ visible in `systemctl status` instead of scrolling past in the journal.
 Come back after a day and check:
 
 ```bash
-sudo journalctl -u heron-deterrent --since today | grep -c 'HERON DETECTED'
-sudo journalctl -u heron-deterrent --since today | grep -c 'Motion detected'
-df -h /home
+journalctl -u heron-deterrent --since today | grep -c 'HERON DETECTED'
+journalctl -u heron-deterrent --since today | grep -c 'Motion detected'
+df -h /
 du -sh media/*
+vcgencmd measure_temp; vcgencmd get_throttled     # in the box now — this is the reading that matters
 ```
 
 | Symptom | Fix |
@@ -315,8 +415,11 @@ du -sh media/*
 | Lots of motion, no detections | Lower `motion.sensitivity` to `2000` |
 | Hundreds of "unknown" alerts | Raise `motion.sensitivity`; wind and shadow trigger it |
 | Herons ignored | Check the mode pill first — at night no model runs by design. By day, lower `modes.day.deter_threshold` toward `0.75` (raises recall on stock positives 0.41 → 0.84, but lets 18% of bench frames through); move the camera closer |
-| Stuck in establishing / switching | Frames are ambiguous. Run `./preflight.py` and compare its chroma/luma against `frame_type:` thresholds |
+| Stuck in establishing / switching | Frames are ambiguous. Run `venv/bin/python preflight.py` and compare its chroma/luma against `frame_type:` thresholds |
 | Hundreds of night "motion" clips | Moths at the IR LEDs or rain on the housing. Raise `modes.ir.cooldown_seconds`, or `motion.sensitivity` |
+| Night clips milky / washed out | The dome gasket — README, "The dome: IR washout" |
+| Camera reconnects, only at night | USB power: put the camera on a powered hub |
+| CPU temp WARN in the box | More heatsink, more air; README, "The filter-house enclosure" |
 | Card filling | Lower `storage.max_media_gb` / `storage.max_motion_gb` |
 
 Apply changes with `nano config.yaml && sudo systemctl restart heron-deterrent`.
@@ -329,23 +432,25 @@ protects the card is also the one that quietly discards your dataset. It runs
 every 5 minutes (`CLEANUP_INTERVAL_SECONDS`) and logs `Size cap: deleted N
 oldest file(s)` when it bites — that line is the only warning you get.
 
-Measured on the Coral bench (640x480, 5 fps, 5 s clips, `record_threshold` 0.30):
+Measured on the Coral bench (640x480, 5 fps, 5 s clips, `record_threshold` 0.30;
+not re-measured on the Pi, whose bench clips averaged 170 KB):
 
 | | clips/hour | growth | time to the 1.0 GB cap |
 |---|---|---|---|
 | Observed, ordinary room activity | ~80 | ~12 MB/h | **~3.8 days** |
 | Saturated, continuous motion (10 s cooldown) | ~225 | ~33 MB/h | **~32 hours** |
 
-Mean clip is ~147 KB. **Offload before that window closes.**
+Mean clip is ~147 KB. **Offload before that window closes.** (Those times are
+against the Coral's 1 GB cap; at the Pi's 15 GB they scale up fifteen-fold, but
+the principle — the cap eats the oldest data first — does not change.)
 
-#### Round the clock, on the Pi
+#### Round the clock
 
-Running 24 hours instead of a 06:00–20:00 window adds the night, and the night
-is where volume becomes unpredictable: with no model to filter it, every moth in
-front of the IR LEDs and every raindrop on the housing is a clip. Daylight clips
-on the Coral averaged ~147 KB (the bench reference clips run ~220 KB; IR clips
-are untested until the camera arrives — assume ~200 KB). Worst cases, from the
-cooldowns:
+Running 24 hours adds the night, and the night is where volume becomes
+unpredictable: with no model to filter it, every moth in front of the IR LEDs
+and every raindrop on the housing is a clip. Daylight clips averaged ~147 KB on
+the Coral and ~170 KB on the Pi bench; IR clips are untested — assume ~200 KB.
+Worst cases, from the cooldowns:
 
 | Pool (cap) | Worst case | Fills its cap in |
 |---|---|---|
@@ -361,30 +466,40 @@ a cap even at the worst case; monthly is fine on an ordinary pond. The
 warning that you left it too long. From your laptop:
 
 ```bash
-mkdir -p ~/heron_board_pull
+mkdir -p ~/heron_pull_pi
 rsync -a --stats \
-  -e "ssh -i ~/.ssh/heron_coral -o IdentitiesOnly=yes" \
-  mendel@<board-ip>:/home/mendel/heron_deterrent/media/ \
-  ~/heron_board_pull/
+  -e "ssh -i ~/.ssh/heron_pi -o IdentitiesOnly=yes" \
+  pi@<pi-ip>:/home/pi/heron_deterrent/media/ \
+  ~/heron_pull_pi/
 ```
 
+(Run on the build: 16 clips, 2.8 MB.)
+
 To pull *and* free the card in one step, so the cap can never reach your
-footage, add `--remove-source-files` (then prune the emptied directories):
+footage, add `--remove-source-files` (then prune the emptied directories). This
+variant has **not** been run against the Pi — it deletes from the card, so try
+the plain pull first and check what arrived:
 
 ```bash
 rsync -a --stats --remove-source-files \
-  -e "ssh -i ~/.ssh/heron_coral -o IdentitiesOnly=yes" \
-  mendel@<board-ip>:/home/mendel/heron_deterrent/media/ \
-  ~/heron_board_pull/
-ssh mendel@<board-ip> 'find ~/heron_deterrent/media -type d -empty -delete'
+  -e "ssh -i ~/.ssh/heron_pi -o IdentitiesOnly=yes" \
+  pi@<pi-ip>:/home/pi/heron_deterrent/media/ \
+  ~/heron_pull_pi/
+ssh -i ~/.ssh/heron_pi pi@<pi-ip> 'find ~/heron_deterrent/media -type d -empty -delete'
 ```
 
-Two warnings:
+Three warnings:
 
 - **Never pull into this repo's `media/`.** That directory is the curated
   reference set behind every threshold in both repos, and
   `tools/measure_thresholds.py` reads it as verified negatives. Mixing board
   clips into it silently corrupts the ground truth. Use a separate directory.
+- **One pull directory per board.** The Coral's clips are a different board,
+  scene and possibly camera — treat them as a different image domain. Pulling
+  the Pi into the Coral's old
+  `~/heron_board_pull` mixes them in the same `motion/`, `unknown/` folders,
+  and only the date in each filename tells them apart afterwards. (It happened
+  on the build; they were separated by date.)
 - macOS ships **openrsync**, not GNU rsync. `--remove-source-files`,
   `--stats` and `--prune-empty-dirs` all work; `--info=stats2` does not.
 
@@ -408,7 +523,10 @@ panel, or turn on `collect_mode` to have the device gather borderline clips.
 
 ## Rollback
 
-**Stop it now:**
+None of this section has been exercised on the Pi; the commands are standard
+systemd and git.
+
+**Stop it now (sudo):**
 
 ```bash
 sudo systemctl stop heron-deterrent
@@ -431,7 +549,9 @@ sudo systemctl restart heron-deterrent
 ```
 
 Models and `sounds/*.wav` are gitignored, so `git checkout` will not remove
-them.
+them. **Careful going back before 2026-11-25** (`4d094d7`): older loaders only
+know `tflite_runtime`, which does not exist on the Pi, so the model will not
+load.
 
 **Back to a clean slate, keeping footage:**
 
@@ -445,7 +565,7 @@ sudo systemctl start heron-deterrent        # recreates both empty
 
 ```bash
 sudo systemctl disable --now heron-deterrent
-sudo rm /etc/systemd/system/heron-deterrent.service /etc/heron-deterrent.env
+sudo rm /etc/systemd/system/heron-deterrent.service /etc/heron-deterrent.env /etc/asound.conf
 sudo systemctl daemon-reload
 rm -rf ~/heron_deterrent
 ```
@@ -460,8 +580,10 @@ Something is wrong and you want the shortest path to a diagnosis:
 cd ~/heron_deterrent
 venv/bin/python preflight.py                     # names the fault and the fix
 systemctl status heron-deterrent                 # running? restart looping?
-sudo journalctl -u heron-deterrent -n 50         # last 50 lines
-df -h /home                                      # full card?
-ls /dev/video*                                   # camera present?
-aplay -l                                         # speaker present?
+journalctl -u heron-deterrent -n 50              # last 50 lines (this boot only)
+tail -50 heron_deterrent.log                     # survives reboots
+df -h /                                          # full card?
+ls /dev/video*; v4l2-ctl --list-devices          # camera present?
+aplay -l; cat /etc/asound.conf                   # speaker present, sound pointed at the jack?
+vcgencmd measure_temp; vcgencmd get_throttled    # too hot, or under-voltage?
 ```
