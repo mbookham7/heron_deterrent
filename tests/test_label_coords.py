@@ -25,6 +25,10 @@
 #     python tests/test_label_coords.py
 # ============================================================
 
+import json
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -35,6 +39,53 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from storage.media_store import MediaStore  # noqa: E402
+
+TEMPLATE = Path(__file__).resolve().parent.parent / 'ui' / 'templates' / 'index.html'
+
+
+# --- The REAL JavaScript, run in Node ------------------------------------------
+# canvas_to_native below is a Python copy: it documents the arithmetic but
+# cannot catch a regression in the browser code, which is what actually writes
+# training data. These helpers pull named functions out of index.html verbatim
+# and run them in Node against a minimal stand-in for the page. Skipped where
+# Node is not installed (the board); run on a dev machine.
+
+def _js_function(source: str, name: str) -> str:
+    """The full text of `function name(...) {...}` from source, by brace matching."""
+    m = re.search(r'\bfunction\s+' + re.escape(name) + r'\s*\(', source)
+    assert m, f"function {name} not found in {TEMPLATE.name}"
+    depth, i = 0, source.index('{', m.end())
+    for j in range(i, len(source)):
+        depth += {'{': 1, '}': -1}.get(source[j], 0)
+        if depth == 0:
+            return source[m.start():j + 1]
+    raise AssertionError(f"unbalanced braces in function {name}")
+
+
+def _run_js(functions, canvas_w, canvas_h, native_w, native_h, expr):
+    """Evaluate expr with the named template functions defined, the label
+    canvas sized canvas_w x canvas_h and the clip native_w x native_h.
+    Returns the JSON-decoded result, or None if Node is not installed."""
+    node = shutil.which('node')
+    if not node:
+        return None
+    source = TEMPLATE.read_text()
+    script = '\n'.join([
+        f"const CANVAS = {{width: {canvas_w}, height: {canvas_h}}};",
+        "const document = {getElementById: () => CANVAS};",
+        f"const labelState = {{nativeW: {native_w}, nativeH: {native_h}}};",
+        *(_js_function(source, f) for f in functions),
+        f"console.log(JSON.stringify({expr}));",
+    ])
+    out = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    return json.loads(out.stdout)
+
+
+def _close(got: dict, want: tuple, what: str):
+    got_t = (got['x'], got['y'], got['w'], got['h'])
+    for g, w in zip(got_t, want):
+        assert abs(g - w) < 1e-6, f"{what}: {got_t} != {want}"
 
 
 # --- The three-stage mapping the client is supposed to implement --------------
@@ -152,6 +203,109 @@ def test_api_refuses_heron_with_no_boxes():
     body = r.get_json()
     assert body['success'] is False
     assert 'heron' in body['error'].lower()
+
+
+def test_js_canvas_to_native_asymmetric_scaling():
+    """The same asymmetric case as above, but through the dashboard's own
+    canvasToNative: 800x400 frame on a 300x200 canvas, off-centre box."""
+    got = _run_js(['canvasToNative'], 300, 200, 800, 400, "canvasToNative(50, 30, 100, 40)")
+    if got is None:
+        print("SKIP test_js_canvas_to_native_asymmetric_scaling (node not installed)")
+        return
+    _close(got, (50 * 8 / 3, 30 * 2, 100 * 8 / 3, 40 * 2), "canvasToNative")
+
+
+def test_js_off_centre_box_on_the_real_camera_frame():
+    """The camera's 640x480 on an awkwardly sized canvas, as a wide modal would
+    produce: 1213x910 is NOT 4:3 exactly (1213/910 = 1.3330 vs 1.3333), so the
+    two axes scale differently, and the box sits near the bottom-left corner,
+    nowhere near any symmetry line. A transposed, aspect-locked or
+    centre-anchored transform gets a different number here."""
+    nw, nh, cw, ch = 640, 480, 1213, 910
+    box = (101.5, 707.25, 333.0, 150.5)
+    got = _run_js(['canvasToNative'], cw, ch, nw, nh, f"canvasToNative{box}")
+    if got is None:
+        print("SKIP test_js_off_centre_box_on_the_real_camera_frame (node not installed)")
+        return
+    sx, sy = nw / cw, nh / ch
+    _close(got, (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy), "canvasToNative")
+    # and the box must stay in the bottom-left quadrant of the native frame
+    assert got['x'] < nw / 2 and got['y'] > nh / 2, got
+
+
+def test_js_native_to_canvas_round_trips():
+    """Boxes are stored native and redrawn through nativeToCanvas on every
+    frame and every resize. Going there and back must be the identity, or a
+    box drifts each time the window changes size."""
+    nw, nh, cw, ch = 640, 480, 1213, 910
+    native = {'x': 37.0, 'y': 301.0, 'w': 120.0, 'h': 90.0}
+    got = _run_js(['canvasToNative', 'nativeToCanvas'], cw, ch, nw, nh,
+                  "(() => { const c = nativeToCanvas(%s); "
+                  "return canvasToNative(c.x, c.y, c.w, c.h); })()" % json.dumps(native))
+    if got is None:
+        print("SKIP test_js_native_to_canvas_round_trips (node not installed)")
+        return
+    _close(got, (37.0, 301.0, 120.0, 90.0), "round trip")
+
+
+# --- The server half, end to end -----------------------------------------------
+
+def _clip(path: Path, w: int, h: int, n: int = 5):
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 5, (w, h))
+    for i in range(n):
+        writer.write(np.full((h, w, 3), 40 * i, np.uint8))
+    writer.release()
+
+
+def _labelling_client(tmp: Path, w: int, h: int):
+    """Flask test client over a fake system with one real day clip, w x h."""
+    clip = tmp / 'clip.mp4'
+    _clip(clip, w, h)
+    row = {'id': 7, 'video_path': str(clip), 'frame_type': 'day',
+           'metadata': json.dumps({'clip_frame_types': ['day'] * 5})}
+
+    class _DB:
+        labelled = {}
+        def get_detection(self, i): return row if i == 7 else None
+        def update_manual_label(self, i, label): self.labelled[i] = label
+
+    class _System:
+        database = _DB()
+        media_store = MediaStore(str(tmp / 'media'))
+
+    from ui import app as ui_app
+    ui_app.init_app(_System())
+    return ui_app.app.test_client(), tmp / 'media' / 'labeled' / 'day'
+
+
+def test_api_writes_the_off_centre_box_exactly():
+    """A native-pixel box posted to /api/label on a real 640x480 clip comes
+    out as the exact YOLO line, in the day tree, beside a 640x480 image."""
+    with tempfile.TemporaryDirectory() as t:
+        client, day = _labelling_client(Path(t), 640, 480)
+        r = client.post('/api/label', json={'detection_id': 7, 'label': 'heron',
+                                            'bboxes': [[37, 301, 120, 90]], 'frame_index': 2})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()['domain'] == 'day'
+        labels = list((day / 'labels').glob('*.txt'))
+        images = list((day / 'images').glob('*.jpg'))
+        assert len(labels) == 1 and len(images) == 1
+        xc, yc, wn, hn = (float(v) for v in labels[0].read_text().split()[1:])
+        assert abs(xc - (37 + 60) / 640) < 1e-6, xc       # 0.1515625
+        assert abs(yc - (301 + 45) / 480) < 1e-6, yc      # 0.7208333
+        assert abs(wn - 120 / 640) < 1e-6 and abs(hn - 90 / 480) < 1e-6
+        assert cv2.imread(str(images[0])).shape[:2] == (480, 640)
+
+
+def test_api_refuses_a_box_off_the_frame():
+    """A box that only fits a bigger frame — what a wrong client scale
+    produces — is refused, not clipped and written."""
+    with tempfile.TemporaryDirectory() as t:
+        client, day = _labelling_client(Path(t), 640, 480)
+        r = client.post('/api/label', json={'detection_id': 7, 'label': 'heron',
+                                            'bboxes': [[600, 400, 120, 90]], 'frame_index': 0})
+        assert r.status_code == 400, r.get_json()
+        assert not (day / 'labels').exists() or not list((day / 'labels').glob('*.txt'))
 
 
 if __name__ == '__main__':
