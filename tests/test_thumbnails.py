@@ -152,6 +152,35 @@ def test_endpoint_misses_then_hits_and_404s_a_missing_clip():
         assert client.get('/api/detection/99/thumb').status_code == 404
 
 
+def test_endpoint_serves_with_relative_config_paths():
+    """The deployed config uses relative paths (./data/, ./media/) and the
+    service runs from the repo root. Flask's send_file resolves a relative
+    path against the ui/ package, so a relative cache path 500s on every
+    thumbnail — found with the dashboard against a copy of the Pi's data."""
+    import os
+    with tempfile.TemporaryDirectory() as t:
+        old = os.getcwd()
+        os.chdir(t)
+        try:
+            clip = _clip(Path('media') / 'motion' / 'motion_ir_1.mp4')
+            rows = {3: {'id': 3, 'video_path': str(clip)}}   # relative, as in the DB
+
+            class _DB:
+                def get_detection(self, i): return rows.get(i)
+
+            class _System:
+                database = _DB()
+                thumbnails = ThumbnailCache('data/thumbs', 'media')
+
+            from ui import app as ui_app
+            ui_app.init_app(_System())
+            r = ui_app.app.test_client().get('/api/detection/3/thumb')
+            assert r.status_code == 200, r.status_code
+            assert r.data[:2] == b'\xff\xd8'                  # a JPEG
+        finally:
+            os.chdir(old)
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0

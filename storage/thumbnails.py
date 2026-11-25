@@ -33,8 +33,11 @@ class ThumbnailCache:
     QUALITY = 70
 
     def __init__(self, cache_dir: str, media_dir: str):
-        self.cache_dir = Path(cache_dir)
-        self.media_dir = Path(media_dir)
+        # Absolute, because the config's paths are relative ('./data/') and
+        # Flask's send_file resolves a relative path against the app's own
+        # package directory, not the working directory.
+        self.cache_dir = Path(cache_dir).resolve()
+        self.media_dir = Path(media_dir).resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
