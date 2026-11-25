@@ -26,8 +26,9 @@ come up rather than stating them as fact. The main ones:
 - **Nothing has been measured at the pond** — no real heron, no outdoor scene,
   no night.
 - **The camera specification is the vendor's**, not measured. In particular
-  whether the 96° field of view is horizontal or diagonal, and whether 640×480
-  crops or squashes the sensor, are open — see "Camera and mounting".
+  whether the 96° field of view is horizontal or diagonal is open — see
+  "Camera and mounting". (Whether 640×480 crops or squashes the sensor *was*
+  measured: it crops.)
 
 ---
 
@@ -315,14 +316,22 @@ Reasons to keep 640×480:
   reach the model.
 - **It is cheap**: 30 fps available natively, small clips, little CPU.
 
-**Open question — crop or squash?** The OV2710 is a 16:9 sensor and 640×480 is
+**It crops, it does not squash.** The OV2710 is a 16:9 sensor and 640×480 is
 4:3. A UVC camera can get there by *cropping* the sides of the sensor (the image
 stays undistorted, the horizontal view narrows) or by *squashing* the whole
 sensor into 4:3 (full view, but everything is horizontally compressed — and a
-heron is a tall thin bird). Comparing a 1920×1080 frame with a 640×480 frame of
-the same scene settles it. The first attempt on the bench failed — the lens was
-covered — and it has not been repeated. The mounting arithmetic below assumes
-**crop**.
+heron is a tall thin bird). On the bench, the same lit scene was captured at
+1920×1080 and at 640×480 and every candidate region of the large frame was
+scored against the small one. The best match was exactly the **centred
+1440×1080 window** — a 4:3 crop — at correlation 0.982, against 0.589 for the
+whole frame squashed. So:
+
+- **No distortion.** The model sees the bird in its true proportions.
+- **The vertical view is the sensor's full ~64°**, which the mounting
+  arithmetic below relies on.
+- **The horizontal view at 640×480 is about 80°**, not 96°:
+  `2 × atan(tan 48° × 3/4) ≈ 80°` — still assuming the vendor's 96° is the
+  horizontal figure for the full sensor.
 
 ### Mounting distance — and how to redo the sum for another lens
 
@@ -375,15 +384,16 @@ nine in ten of them. At 4.5 m it matches only the single smallest box in the
 set — that is the edge of what the model has seen, not a comfortable working
 distance. Distant birds were already the ones the model missed on the Coral.
 
-**Three assumptions, any of which moves the answer:**
+**Two assumptions, either of which moves the answer:**
 
 - **96° is horizontal.** Camera vendors often quote the *diagonal*. If it is
   diagonal, the vertical view is narrower, herons look bigger, and every
   distance stretches.
-- **640×480 crops the sensor** (previous section). If it squashes instead, the
-  vertical view is unchanged but the bird is horizontally compressed — a
-  distortion the model never saw in training.
 - **0.9 m heron.**
+
+(A third used to be here — that 640×480 crops the sensor rather than
+squashing it. That has since been measured: it crops. See "Capture
+resolution".)
 
 **Redoing it for a different lens:** replace 96° in step 2 with the new
 horizontal field of view (and 9/16 with the sensor's aspect ratio, if it is
@@ -562,8 +572,9 @@ is not on a board. **Run them on a dev machine** (`pip install ultralytics`)
 before trusting a change to preprocessing — without them the file only asserts
 that the code agrees with itself.
 
-The same "squash vs letterbox" question applies one step earlier, at the camera
-— see "Capture resolution" above.
+The same "squash vs letterbox" question arises one step earlier, at the camera:
+there, 640×480 is a crop of the sensor, so nothing is squashed either — see
+"Capture resolution" above.
 
 ### Full configuration reference
 
