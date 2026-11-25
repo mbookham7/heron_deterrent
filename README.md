@@ -289,9 +289,14 @@ choices follow from "sealed":
   cold night.
 
 **How warm it actually gets in there has not been measured.** On the bench, in
-open air: 55 °C idle at boot, ~60–64 °C with the service running, and 68.6 °C
-after only eight seconds of back-to-back inference, never throttled. That is
-already close to `preflight`'s 70 °C warning, before the box adds anything.
+open air: 55 °C idle at boot, ~60–64 °C with the service running — later the
+same evening, 68–69 °C — and 68.6 °C after only eight seconds of back-to-back
+inference. **Half a minute of continuous inference in open air reached 79.8 °C
+and tripped the firmware's soft temperature limit** (`get_throttled` went to
+`0x80000`, and `0xe0008` — throttling *now* — at 82.7 °C on a second run).
+Real detection only runs inference on motion, not continuously, but a busy
+night of triggers is closer to that test than to idle. That is before the box
+adds anything: heatsinks are not optional, and the box may need more.
 Once it is in the box, check it after a few hours, and again on a warm day:
 
 ```bash
@@ -850,23 +855,117 @@ that for what happened before a crash-and-reboot.
 
 ## Web Dashboard
 
-At `http://<pi-ip>:5000`.
+At `http://<pi-ip>:5000` (or `http://heron-pi.local:5000` from a Mac or iPhone).
+
+Space follows content. **Triage owns the page**: it is the work, and at a pond
+there will be hundreds of clips to look at and, mostly, no herons. A Herons
+panel appears above it only when there are herons; otherwise that is one line.
+Everything you glance at sits in a narrow side column.
 
 | Section | Description |
 |---|---|
 | Mode pill | Day / IR night / Dark night / establishing / switching; model or motion-only; deterrent armed or silent. Hover for live chroma/luma |
-| Stats strip | Herons today, model detections, last heron, model alerts, and — separately — unclassified motion. Motion is never counted as a detection |
-| Frame-type filter | Day / IR / Dark / Unsettled, across the lists and gallery. Every clip carries a frame-type badge |
-| Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection |
-| Recent Alerts | CRITICAL and WARNING alerts with timestamps |
-| Heron Detections | History with confidence bars |
-| To Triage | Clips the model returned "unknown" for, plus unclassified motion clips — label them to build a dataset. The label dialog shows which training set (day/IR/dark) the frame goes to, and blocks saving until there is one |
-| Heron Gallery | Confirmed heron clips |
-| Test Upload | Upload a video to run inference against — the quickest end-to-end proof |
+| Stats strip | Herons today, last heron, **to triage**, unclassified motion, model detections. Motion is never counted as a detection |
+| Herons | Only when there are any: history with confidence, and the clips (thumbnail as poster). Never filtered |
+| To Triage | A contact sheet — see below |
+| Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection. Test Speaker plays through the running service |
+| Recent Alerts | Identical consecutive alerts are one row with a count and time span; expand for each one's thumbnail and whether it has been labelled. A 0.00 confidence is never shown |
+| Tools | Collapsed: test video upload — the quickest end-to-end proof |
+
+### Triage: a contact sheet
+
+Every triage row used to read "unknown object" — the signal was in an image you
+had to open a dialog to see. Now each clip is a thumbnail, grouped by day and
+image domain ("Today · IR night"), showing the whole frame (never cropped — a
+heron at the edge must stay visible), its time, frame-type badge, and a
+confidence only where a model produced one. A filter above it narrows to Day /
+IR / Dark / Unsettled, with counts.
+
+**Bulk "no heron" is the main way training data gets made.** The model has
+never seen a single negative example — which is why non-heron frames score as
+high as 0.894. Select clips (click; shift-click a range; a group's checkbox;
+`A` for all shown) and press `N`:
+
+- Each clip's **thumbnail frame — frame 1, the only one you looked at** — is
+  saved as a background example (an empty annotation): *no heron in this
+  frame*. Not the other frames of the clip, which you have not seen.
+- Each clip goes to **its own** domain's set, `labeled/day/`, `ir/` or `dark/`,
+  by its frame type recorded at capture — through exactly the same code path
+  as a single label. **A bulk action never chooses a domain**: a clip caught
+  mid-switch, with no capture-time record, or whose frame 1 is a transition
+  frame stays in triage, still selected, for you to deal with one at a time.
+- A confirmation shows the split first: "2 → `labeled/day/`, 5 →
+  `labeled/ir/`, 1 cannot be filed in bulk".
+- **Undo** (`U`) deletes exactly the files the last batch wrote and puts its
+  clips back — sparing any clip you have relabelled by hand since. It
+  survives a service restart.
+- "Heron" is never a bulk label: a heron needs a box drawn by hand.
+
+Keys on the sheet: arrows move, `Space` selects, `Enter` opens the labeller,
+`A` all, `N` no heron, `U` undo, `Esc` clears. While you have a selection, new
+clips arriving are held behind an "N new" pill rather than moving tiles under
+the cursor.
+
+### The labeller
+
+Double-click a tile (or `Enter`). The frame fills the screen at its own aspect
+ratio — on a 1568 px window, 1136×852 for the camera's 640×480 — with the label
+choices beside it. Draw with a drag (mouse, finger or pen); drawing a box
+selects "heron". Keys: `←`/`→` frame (`Shift` ×5, `Home`/`End`); `H` heron,
+`N` no heron, `B` `C` `D` `P` other bird / cat / dog / person, `U` can't tell;
+`Enter` save and open the next clip; `Shift+Enter` save and close; `]`/`[`
+next/previous clip without saving; `Ctrl/Cmd+Z` undo a box, `Delete` clear;
+`Esc` close.
+
+**The coordinate guard.** The frame and the drawing layer over it are sized
+together, in whole pixels, by the page's script — not by CSS — because box
+coordinates are scaled by exactly that size. A stylesheet change that moved one
+without the other (a padding, a border, `object-fit`, a transform) would not
+cause an error; it would quietly put every box in the wrong place in the
+training data. So before a heron is saved the page checks that the drawing
+layer sits on the image's pixels within 1 px, and **refuses to save** if not,
+naming what is wrong. Each of those five was injected in a real browser and
+refused. The arithmetic itself is pinned by `tests/test_label_coords.py`,
+which runs the page's own JavaScript in Node (on a machine that has Node — not
+the Pi, where those tests skip).
+
+### What the dashboard costs the Pi
+
+Measured on the build Pi with the service running, 38–42 clips in triage, the
+browser fetching six thumbnails at a time, and an inference probe running the
+real model once every 0.6 s alongside (the A/B runs alternated, from the same
+board temperature):
+
+| | Wall | Pi CPU | Data |
+|---|---|---|---|
+| Page HTML, once | — | — | 101 KB |
+| Triage list (`/api/unclassified`), every 5 s | — | — | 25 KB |
+| Contact sheet, **first view** (thumbnails generated) | 2.2–2.4 s | **1.4 s** | ~200 KB, 4.8 KB each |
+| Contact sheet, **every view after** (from disk) | 0.8 s | 0.4 s | ~200 KB |
+
+| Inference while a first view loads | Median |
+|---|---|
+| Before | 381–390 ms |
+| During — thumbnails merely one at a time (first version) | **666–673 ms (+70–77%)** |
+| During — one decoder thread, lowest priority (shipped) | **545–572 ms (+41–49%)** |
+| After | 382–392 ms |
+
+**A first view still slows detection while it loads.** Serialising
+generation was not enough — the video decoder starts a thread per core, and
+the model's four threads wait for one another, so losing part of one core
+stalls all four. One decoder thread and the lowest scheduling priority roughly
+halve the effect; they do not remove it. It lasts only while *new* clips'
+thumbnails are made (about 2 s for 40, and lazy loading means only those on
+screen), and inference is back to normal straight after. Later views are
+served from disk and showed no effect.
+
+Removing it entirely would mean writing each clip's thumbnail when the clip is
+saved, from the frame already in memory — no decode at all. That touches the
+capture path, so it has not been done without a decision.
 
 > Every inconclusive motion event creates a WARNING "unknown" alert and saves a
-> clip. That is deliberate — it feeds the To Triage panel — but at a busy pond
-> the alert feed gets noisy. Raise `motion.sensitivity` if so.
+> clip. That is deliberate — it feeds triage — and the grouping keeps the
+> alert feed readable. Raise `motion.sensitivity` if there are too many.
 
 The Flask server is the development server. That is fine on a private LAN; do
 not expose it to the internet. It listens on every interface, so if the Pi has
@@ -879,12 +978,16 @@ both Ethernet and Wi-Fi connected it answers on both addresses.
 | GET | `/api/live-stream` | MJPEG video stream (2 fps) |
 | GET | `/api/system-status` | System health, frame state and mode JSON |
 | GET | `/api/stats` | Counts for the stats strip (motion reported separately) |
-| GET | `/api/alerts` | Recent alerts (param: `limit`) |
+| GET | `/api/alerts` | Recent alerts, each with its detection's `det_label`, `det_confidence`, `det_frame_type`, `det_user_label` (param: `limit`) |
 | GET | `/api/detections` | Detection history (params: `label`, `limit`, `frame_type` = day/ir/dark/unknown) |
 | GET | `/api/heron-detections` | Heron-only detections (params: `limit`, `frame_type`) |
 | GET | `/api/unclassified` | Unlabelled "unknown" and "motion" detections |
+| GET | `/api/detection/<id>/frame/<i>` | One frame at native resolution — what the labeller draws on |
+| GET | `/api/detection/<id>/thumb` | 320-wide JPEG of a frame (param: `frame`, default 0) for the contact sheet. Cached in `data/thumbs/`; `X-Thumb: hit\|miss`. Display only — never used for coordinates |
 | GET | `/api/detection/<id>/frame/<i>/domain` | Which training set frame `i` would be filed under (param: `requested`) |
-| POST | `/api/label` | Submit a manual label `{detection_id, label, bboxes, frame_index, domain?}`. 409 if the frame cannot be placed in a domain |
+| POST | `/api/label` | Submit a manual label `{detection_id, label, bboxes, frame_index, domain?}`. Labels: `heron` (needs boxes), `background` (no heron), `bird`, `cat`, `dog`, `person`, `unknown`. 409 if the frame cannot be placed in a domain |
+| POST | `/api/label/bulk` | `{detection_ids, label: "background", preview?}` — frame 0 of each clip, each to its own domain; returns `filed` per domain, `left` (with reasons) and a `batch_id`. `preview` writes nothing |
+| POST | `/api/label/bulk/undo` | `{batch_id}` of the latest batch: delete exactly its files, return its clips to triage |
 | POST | `/api/trigger-deterrent` | Manual speaker test. Plays regardless of mode |
 | POST | `/api/upload-test-video` | Run inference on an uploaded video. Refused unless every key frame is a day frame |
 | GET | `/api/media/<filename>` | Serve a stored clip |
@@ -975,7 +1078,8 @@ heron_deterrent/
 │
 ├── storage/
 │   ├── database.py               # SQLite (thread-safe)
-│   └── media_store.py            # Clips, retention, two size-capped pools, labeled/
+│   ├── media_store.py            # Clips, retention, two size-capped pools, labeled/
+│   └── thumbnails.py             # Triage thumbnails: cached, one at a time, low priority
 │
 ├── alerts/
 │   ├── alert_manager.py          # SMS + MQTT orchestration
@@ -994,7 +1098,8 @@ heron_deterrent/
 ├── sounds/                       # *.wav — at least one required
 ├── media/                        # Auto-created: heron/ other/ unknown/ motion/ (clips)
 │                                 #   labeled/{day,ir,dark}/{images,labels}/ (training data)
-├── data/                         # Auto-created: heron.db
+├── data/                         # Auto-created: heron.db, thumbs/ (triage thumbnails),
+│                                 #   last_bulk_label.json (what Undo removes)
 └── docs/
     ├── raspberry_pi4_setup.md    # Flashing and preparing the Pi
     └── legacy/coral/             # Coral Dev Board + Edge TPU — end-of-life
@@ -1028,8 +1133,9 @@ in [docs/legacy/coral/](docs/legacy/coral/README.md).
 The model was trained on ~180 close-up heron images with **no negative
 examples**, which is why non-heron frames score as high as **0.894** on real
 camera footage (see "Accuracy"). The most valuable thing you can add is
-negatives from your own pond: water ripple, ducks, foliage, moving shade. Label
-them via the dashboard's To Triage panel and they are written in YOLO format to
+negatives from your own pond: water ripple, ducks, foliage, moving shade. Select
+them on the dashboard's triage sheet and mark them **no heron** in one go (see
+"Triage: a contact sheet"), and they are written in YOLO format to
 `media/labeled/day/`, `ir/` or `dark/` — one tree per image domain. **Point a
 training run at exactly one of them.** The pre-split
 `media/labeled/images|labels` layout is no longer written; preflight warns if
