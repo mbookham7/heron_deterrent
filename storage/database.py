@@ -220,6 +220,20 @@ class Database:
             ''', (user_label, detection_id))
             self.conn.commit()
 
+    def clear_manual_label(self, detection_id: int, expected_label: str) -> bool:
+        """Put a row back in the triage queue — but only if it still carries
+        `expected_label`, so undoing a batch cannot clobber a clip that was
+        relabelled by hand since. True if the row was reset."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                UPDATE detections
+                SET manually_labeled = 0, user_label = NULL
+                WHERE id = ? AND manually_labeled = 1 AND user_label = ?
+            ''', (detection_id, expected_label))
+            self.conn.commit()
+            return cursor.rowcount == 1
+
     def cleanup_old_records(self, days: int):
         with self._lock:
             cursor = self.conn.cursor()

@@ -115,8 +115,24 @@ def get_unclassified():
 # Labels that require a bounding box (only class the model is trained on).
 # Anything else is written as a background image (empty annotation), which is
 # YOLO's convention for a negative example — see save_labeled_image.
+# 'background' is the explicit "no heron in this frame": the negative examples
+# the training set has none of. 'unknown' means "I can't tell", not that.
 LABELS_REQUIRING_BBOX = {'heron'}
-ALLOWED_LABELS = {'heron', 'cat', 'dog', 'bird', 'person', 'unknown'}
+ALLOWED_LABELS = {'heron', 'background', 'cat', 'dog', 'bird', 'person', 'unknown'}
+
+# Bulk labelling only ever asserts "no heron". A heron needs a hand-drawn box.
+BULK_LABELS = {'background'}
+BULK_MAX = 500
+# The thumbnail frame. A bulk label vouches only for the frame the operator
+# actually looked at, so this is the one frame filed per clip.
+BULK_FRAME_INDEX = 0
+
+
+class LabelRefused(Exception):
+    """A label that must not be written. status is the HTTP code to return."""
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
 
 
 def _detection_by_id(detection_id: int):
@@ -319,53 +335,177 @@ def submit_label():
         if not detection:
             return jsonify({'success': False, 'error': 'detection not found'}), 404
 
-        # The row is marked labelled only AFTER the training file is written,
-        # so a refused domain leaves the clip in the triage queue.
-        domain = None
-        opened = _open_clip(detection_id)
-        if opened:
-            cap, native_w, native_h, count = opened
-            try:
-                idx = max(0, min(frame_index, count - 1))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ok, frame = cap.read()
-                if not ok:
-                    return jsonify({'success': False,
-                                    'error': f'cannot decode frame {idx}'}), 500
-
-                # Day and night training data must never mix. The domain comes
-                # from the clip's frame type, cross-checked against THIS frame's
-                # type as recorded live at capture; a clip with no settled type
-                # or no record needs the operator to name one.
-                recorded = _recorded_frame_type(detection, idx, count)
-                domain, why = resolve_label_domain(
-                    detection.get('frame_type'), recorded, requested_domain)
-                if domain is None:
-                    return jsonify({'success': False, 'error': why}), 409
-
-                # For labels that do not require a bbox (cat/dog/bird/person/
-                # unknown), any bboxes the client sent are dropped and an empty
-                # .txt is written. That IS a valid YOLO background example.
-                write_boxes = bboxes if label in LABELS_REQUIRING_BBOX else []
-                _validate_pixel_boxes(write_boxes, native_w, native_h)
-                system.media_store.save_labeled_image(
-                    frame, label, write_boxes, detection_id, frame_type=domain
-                )
-            finally:
-                cap.release()
-
-        system.database.update_manual_label(detection_id, label)
-
-        logger.info(f"Label submitted: detection {detection_id} -> {label} "
-                    f"(frame {frame_index}, {len(bboxes)} box(es), "
-                    f"domain {domain or 'none — no clip'})")
+        domain, _written = _label_one(detection, label, bboxes, frame_index, requested_domain)
         return jsonify({'success': True, 'domain': domain})
 
+    except LabelRefused as e:
+        return jsonify({'success': False, 'error': str(e)}), e.status
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Error submitting label: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _label_one(detection, label, bboxes, frame_index, requested_domain, dry_run=False):
+    """THE path every label takes — one at a time from the modal, or many from
+    the contact sheet. Returns (domain, [written file paths]); raises
+    LabelRefused when the frame must not be filed, leaving the row in triage.
+
+    The caller has already checked the label vocabulary and that a heron has
+    boxes. With dry_run, decides the domain and writes nothing.
+    """
+    detection_id = detection['id']
+    # The row is marked labelled only AFTER the training file is written,
+    # so a refused domain leaves the clip in the triage queue.
+    domain = None
+    written = []
+    opened = _open_clip(detection_id)
+    if opened:
+        cap, native_w, native_h, count = opened
+        try:
+            idx = max(0, min(frame_index, count - 1))
+            frame = None
+            if not dry_run:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok, frame = cap.read()
+                if not ok:
+                    raise LabelRefused(500, f'cannot decode frame {idx}')
+
+            # Day and night training data must never mix. The domain comes
+            # from the clip's frame type, cross-checked against THIS frame's
+            # type as recorded live at capture; a clip with no settled type
+            # or no record needs the operator to name one.
+            recorded = _recorded_frame_type(detection, idx, count)
+            domain, why = resolve_label_domain(
+                detection.get('frame_type'), recorded, requested_domain)
+            if domain is None:
+                raise LabelRefused(409, why)
+            if dry_run:
+                return domain, []
+
+            # For labels that do not require a bbox (background/cat/dog/bird/
+            # person/unknown), any bboxes the client sent are dropped and an
+            # empty .txt is written. That IS a valid YOLO background example.
+            write_boxes = bboxes if label in LABELS_REQUIRING_BBOX else []
+            _validate_pixel_boxes(write_boxes, native_w, native_h)
+            written = list(system.media_store.save_labeled_image(
+                frame, label, write_boxes, detection_id, frame_type=domain
+            ))
+        finally:
+            cap.release()
+    elif dry_run:
+        return None, []
+
+    system.database.update_manual_label(detection_id, label)
+
+    logger.info(f"Label submitted: detection {detection_id} -> {label} "
+                f"(frame {frame_index}, {len(bboxes)} box(es), "
+                f"domain {domain or 'none — no clip'})")
+    return domain, written
+
+
+def _bulk_batch_file() -> Path:
+    # Beside the database, so it survives a restart: "undo" should still work
+    # after the service bounces mid-session.
+    return Path(system.database.db_path).parent / 'last_bulk_label.json'
+
+
+@app.route('/api/label/bulk', methods=['POST'])
+def submit_bulk_label():
+    """Label many clips "no heron" at once — the main way negative training
+    data gets made. {detection_ids: [...], label: 'background', preview?: bool}
+
+    Each clip goes through _label_one, exactly as a single label would, with
+    its own frame type deciding its own domain. A bulk action never picks a
+    domain: a clip that needs a human to choose one (caught mid-switch, or no
+    capture-time record) is left in triage and reported. One frame per clip
+    is filed — the thumbnail frame, the only one the operator looked at.
+
+    preview: report where each clip WOULD go, writing nothing — the dashboard
+    shows this before the operator confirms.
+    """
+    if not system:
+        return jsonify({'success': False, 'error': 'System not initialized'}), 500
+    data = request.json or {}
+    label = data.get('label')
+    ids = data.get('detection_ids') or []
+    preview = bool(data.get('preview'))
+
+    if label not in BULK_LABELS:
+        return jsonify({'success': False, 'error':
+                        f"bulk labelling only files 'no heron' ({', '.join(sorted(BULK_LABELS))}); "
+                        f"'{label}' must be labelled one clip at a time"}), 400
+    if not isinstance(ids, list) or not ids or len(ids) > BULK_MAX:
+        return jsonify({'success': False,
+                        'error': f'detection_ids must be a list of 1-{BULK_MAX} ids'}), 400
+
+    filed = {}                       # domain -> count
+    left = []                        # [{id, reason}] — still in triage
+    batch = []                       # what to undo
+    for detection_id in dict.fromkeys(ids):          # de-duplicated, order kept
+        detection = _detection_by_id(detection_id) if isinstance(detection_id, int) else None
+        if not detection:
+            left.append({'id': detection_id, 'reason': 'not found'})
+            continue
+        if detection.get('manually_labeled'):
+            left.append({'id': detection_id, 'reason': 'already labelled'})
+            continue
+        try:
+            domain, written = _label_one(detection, label, [], BULK_FRAME_INDEX, None,
+                                         dry_run=preview)
+        except (LabelRefused, ValueError) as e:
+            left.append({'id': detection_id, 'reason': str(e)})
+            continue
+        key = domain or 'no clip'
+        filed[key] = filed.get(key, 0) + 1
+        if not preview:
+            batch.append({'id': detection_id, 'files': written})
+
+    batch_id = None
+    if batch:
+        batch_id = f"{int(time.time() * 1000)}"
+        _bulk_batch_file().write_text(json.dumps(
+            {'batch_id': batch_id, 'label': label, 'items': batch}))
+        logger.info(f"Bulk label {batch_id}: {len(batch)} clip(s) -> {label} "
+                    f"{filed}; {len(left)} left in triage")
+    return jsonify({'success': True, 'preview': preview, 'filed': filed,
+                    'left': left, 'batch_id': batch_id})
+
+
+@app.route('/api/label/bulk/undo', methods=['POST'])
+def undo_bulk_label():
+    """Undo the most recent bulk label: delete exactly the training files it
+    wrote and put its clips back in triage. A clip relabelled by hand since
+    is left alone. {batch_id} must match the latest batch."""
+    if not system:
+        return jsonify({'success': False, 'error': 'System not initialized'}), 500
+    path = _bulk_batch_file()
+    if not path.exists():
+        return jsonify({'success': False, 'error': 'nothing to undo'}), 404
+    record = json.loads(path.read_text())
+    if (request.json or {}).get('batch_id') != record['batch_id']:
+        return jsonify({'success': False,
+                        'error': 'only the most recent bulk label can be undone'}), 409
+
+    labeled_root = (Path(system.media_store.base_path) / 'labeled').resolve()
+    restored, removed, kept = 0, 0, []
+    for item in record['items']:
+        if not system.database.clear_manual_label(item['id'], record['label']):
+            kept.append(item['id'])                 # relabelled since: leave it
+            continue
+        restored += 1
+        for f in item['files']:
+            p = Path(f).resolve()
+            # Only ever delete inside labeled/, and only what this batch wrote.
+            if labeled_root in p.parents and p.exists():
+                p.unlink()
+                removed += 1
+    path.unlink()
+    logger.info(f"Undid bulk label {record['batch_id']}: {restored} back in triage, "
+                f"{removed} file(s) removed, {len(kept)} left (relabelled since)")
+    return jsonify({'success': True, 'restored': restored, 'files_removed': removed,
+                    'kept': kept})
 
 
 def _validate_pixel_boxes(bboxes, native_w, native_h):
