@@ -144,11 +144,20 @@ class Database:
             return [dict(row) for row in cursor.fetchall()]
 
     def get_recent_alerts(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Alerts, each with what its detection was: the dashboard groups
+        identical rows and shows a frame type and thumbnail instead of six
+        copies of 'unknown detected (confidence: 0.00)'."""
         with self._lock:
             cursor = self.conn.cursor()
             cursor.execute('''
-                SELECT * FROM alerts
-                ORDER BY timestamp DESC
+                SELECT a.*,
+                       d.label        AS det_label,
+                       d.confidence   AS det_confidence,
+                       d.frame_type   AS det_frame_type,
+                       d.user_label   AS det_user_label
+                FROM alerts a
+                LEFT JOIN detections d ON d.id = a.detection_id
+                ORDER BY a.timestamp DESC
                 LIMIT ?
             ''', (limit,))
             return [dict(row) for row in cursor.fetchall()]
