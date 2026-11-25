@@ -120,20 +120,27 @@ class ModelLoader:
         )
 
     def _build_cpu(self):
+        # tflite_runtime first: on Mendel it is the apt package matched to
+        # libedgetpu. ai_edge_litert is its renamed successor (TFLite became
+        # LiteRT) and the only one with wheels for Python 3.13, which is what
+        # Raspberry Pi OS 13 (Trixie) ships — tflite-runtime has none there.
         try:
             from tflite_runtime.interpreter import Interpreter
         except ImportError:
             try:
-                import tensorflow as tf  # dev machines only; too heavy for a board
-                Interpreter = tf.lite.Interpreter
-            except ImportError as e:
-                raise ModelLoadError(
-                    "ai.target is 'cpu' but no TFLite runtime is installed.\n"
-                    "  On a Raspberry Pi:  pip install tflite-runtime\n"
-                    "  On Mendel/Coral:    sudo apt-get install -y python3-tflite-runtime\n"
-                    "                      (and create the venv with --system-site-packages)\n"
-                    "  On a dev machine:   pip install tensorflow"
-                ) from e
+                from ai_edge_litert.interpreter import Interpreter
+            except ImportError:
+                try:
+                    import tensorflow as tf  # dev machines only; too heavy for a board
+                    Interpreter = tf.lite.Interpreter
+                except ImportError as e:
+                    raise ModelLoadError(
+                        "ai.target is 'cpu' but no TFLite runtime is installed.\n"
+                        "  On a Raspberry Pi:  venv/bin/pip install ai-edge-litert\n"
+                        "  On Mendel/Coral:    sudo apt-get install -y python3-tflite-runtime\n"
+                        "                      (and create the venv with --system-site-packages)\n"
+                        "  On a dev machine:   pip install tensorflow"
+                    ) from e
 
         return Interpreter(model_path=str(self.model_path), num_threads=self.num_threads)
 
