@@ -566,6 +566,137 @@
 
         .empty-icon { font-size: 28px; margin-bottom: 8px; }
 
+        /* ── Triage contact sheet ──
+           Triage is visual: every row used to read "unknown object". Tiles
+           show the whole frame (contain, never cover — a heron at the edge
+           must not be cropped away), and the thumbnail frame is the one a
+           bulk "no heron" files, so what you see is what you vouch for. */
+        [hidden] { display: none !important; }   /* .btn's display would win otherwise */
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn:disabled { opacity: 0.4; cursor: default; }
+        kbd {
+            font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+            padding: 0 4px;
+            border: 1px solid var(--border-hi);
+            border-bottom-width: 2px;
+            border-radius: 3px;
+            color: var(--text-dim);
+        }
+        .btn-primary kbd { color: #fff; border-color: rgba(255,255,255,0.5); }
+        .triage-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .triage-toolbar label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .new-pill {
+            margin-left: auto;
+            padding: 3px 10px;
+            border-radius: 12px;
+            background: rgba(88,166,255,0.15);
+            color: var(--blue);
+            cursor: pointer;
+        }
+        .triage-body { padding: 0 16px 16px; }
+        .tgroup-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 14px 0 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-dim);
+        }
+        .tgroup-head label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .sheet {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 8px;
+        }
+        .tile {
+            position: relative;
+            aspect-ratio: 4 / 3;
+            background: #000;
+            border: 2px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            outline: none;
+            user-select: none;
+        }
+        .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .tile:hover { border-color: var(--border-hi); }
+        .tile.selected { border-color: var(--blue); }
+        .tile:focus-visible { box-shadow: 0 0 0 2px var(--yellow); }
+        .tile .tcheck {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border: 2px solid rgba(255,255,255,0.75);
+            background: rgba(0,0,0,0.35);
+        }
+        .tile.selected .tcheck { background: var(--blue); border-color: var(--blue); }
+        .tile.selected .tcheck::after {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 0;
+            width: 5px;
+            height: 10px;
+            border: solid #fff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+        .tile .topen {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            font-size: 11px;
+            padding: 1px 7px;
+            border-radius: 4px;
+            border: none;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            cursor: pointer;
+            opacity: 0;
+        }
+        .tile:hover .topen, .tile:focus-visible .topen { opacity: 1; }
+        .tile .tmeta {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding: 10px 6px 4px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.85));
+            font-size: 11px;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        .tile .tmeta .tkind {
+            margin-left: auto;
+            padding-left: 4px;
+            color: rgba(255,255,255,0.7);
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .confirm-list { margin: 10px 0; font-size: 13px; }
+        .confirm-list li { margin: 4px 0 4px 18px; }
+        .confirm-left { font-size: 12px; color: var(--text-dim); }
+        .confirm-left summary { cursor: pointer; }
+
         /* ── Label modal ── */
         .modal-backdrop {
             display: none;
@@ -812,18 +943,31 @@
             </div>
         </div>
 
-        <!-- Unclassified -->
-        <div class="card">
+        <!-- To triage: a contact sheet. Click selects, double-click (or Enter)
+             opens the labeller, and "no heron" files every selected clip's
+             thumbnail frame as a background example in its own domain. -->
+        <div class="card full-width" id="triage-card">
             <div class="card-header">
-                <span class="card-title">❓ To Triage — Unknown &amp; Motion</span>
-                <span class="badge" id="badge-unclass">0</span>
+                <span class="card-title">❓ To Triage <span class="badge" id="badge-unclass">0</span></span>
+                <span style="font-size:11px; color:var(--text-mute);">
+                    click selects · shift-click a range · double-click labels ·
+                    <kbd>←↑↓→</kbd> <kbd>Space</kbd> <kbd>Enter</kbd> <kbd>A</kbd> <kbd>N</kbd>
+                </span>
             </div>
-            <div class="det-list" id="unclass-list">
-                <div class="empty"><div class="empty-icon">🔍</div>Nothing unclassified</div>
+            <div class="triage-toolbar">
+                <label><input type="checkbox" id="sel-all" onchange="selectAllShown(this.checked)"> Select all shown</label>
+                <span id="sel-count">0 selected</span>
+                <button class="btn btn-primary btn-sm" id="btn-bulk" onclick="bulkNoHeron()" disabled
+                        title="File each selected clip's thumbnail frame as a 'no heron' training example, in its own day/IR/dark set">
+                    Mark as no heron <kbd>N</kbd></button>
+                <button class="btn btn-subtle btn-sm" onclick="clearSelection()">Clear <kbd>Esc</kbd></button>
+                <button class="btn btn-subtle btn-sm" id="btn-undo-bulk" onclick="undoBulk()" hidden
+                        title="Delete the files the last bulk label wrote and put its clips back here">
+                    Undo last <kbd>U</kbd></button>
+                <span class="new-pill" id="triage-new" hidden onclick="showHeldNew()"></span>
             </div>
-            <div class="card-body" style="font-size:12px; color:var(--text-mute);">
-                Click <strong>Label</strong> on any detection above (or in the heron gallery) to
-                step through its frames and draw boxes.
+            <div class="triage-body" id="unclass-list">
+                <div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>
             </div>
         </div>
 
@@ -896,6 +1040,7 @@
             <div class="form-row" style="margin-top:12px;">
                 <select class="form-select" id="modal-label-select">
                     <option value="heron">Heron (draw box)</option>
+                    <option value="background">No heron (background)</option>
                     <option value="cat">Cat</option>
                     <option value="dog">Dog</option>
                     <option value="bird">Other Bird</option>
@@ -923,6 +1068,23 @@
     </div>
 </div>
 
+<!-- Bulk "no heron" confirmation: shows where every clip would go before
+     anything is written. -->
+<div class="modal-backdrop" id="bulk-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-title"
+         style="width:min(520px, 96vw);">
+        <div class="modal-header">
+            <span class="card-title" id="bulk-title">Mark as no heron</span>
+            <button class="modal-close" onclick="closeBulkConfirm()" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="bulk-body"></div>
+        <div class="btn-row" style="padding:0 16px 16px; justify-content:flex-end;">
+            <button class="btn btn-subtle" onclick="closeBulkConfirm()">Cancel <kbd>Esc</kbd></button>
+            <button class="btn btn-primary" id="btn-bulk-confirm" onclick="confirmBulk()">File them <kbd>Enter</kbd></button>
+        </div>
+    </div>
+</div>
+
 <!-- Toast container -->
 <div id="toast-container"></div>
 
@@ -941,9 +1103,17 @@
     }
 
     // ── Relative time ────────────────────────────────────────────────
+    // SQLite's CURRENT_TIMESTAMP is UTC with no zone marker ("2026-11-25
+    // 19:05:45"). new Date() reads that form as LOCAL time — right in a UK
+    // winter, an hour out all summer — so mark it UTC explicitly.
+    function parseTs(ts) {
+        if (!ts) return new Date(NaN);
+        return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts.replace(' ', 'T') + 'Z');
+    }
+
     function timeAgo(ts) {
         if (!ts) return '—';
-        const d = ts.includes('T') || ts.includes(' ') ? new Date(ts) : new Date(ts + 'Z');
+        const d = parseTs(ts);
         const s = Math.floor((Date.now() - d) / 1000);
         if (s < 5)   return 'just now';
         if (s < 60)  return `${s}s ago`;
@@ -954,8 +1124,7 @@
 
     function fmtTime(ts) {
         if (!ts) return '';
-        const d = ts.includes('T') || ts.includes(' ') ? new Date(ts) : new Date(ts + 'Z');
-        return d.toLocaleString();
+        return parseTs(ts).toLocaleString();
     }
 
     // ── Polling ──────────────────────────────────────────────────────
@@ -1133,30 +1302,298 @@
         } catch {}
     }
 
-    // ── Unclassified ─────────────────────────────────────────────────
+    // ── Triage contact sheet ─────────────────────────────────────────
+    // The list re-polls every 5 s. Re-rendering wholesale would wipe the
+    // selection and shuffle tiles under the cursor mid-click, so: render only
+    // when the set of clips changes, keep the selection by id, and while a
+    // selection is in progress hold new arrivals back behind a pill.
+    const DOMAIN_NAMES = { day: 'Daylight', ir: 'IR night', dark: 'Dark night' };
+    const triage = {
+        shown: [],              // rendered rows, in display order
+        signature: '',          // ids of the rendered rows
+        held: null,             // a newer list kept back while selecting
+        selected: new Set(),
+        anchor: null,           // last clicked index, for shift-click ranges
+        lastBatch: null,        // undoable bulk label
+        preview: null,          // pending bulk confirmation
+    };
+
+    function domainOf(d) { return SETTLED.includes(d.frame_type) ? d.frame_type : 'unsettled'; }
+
+    function dayHeading(ts) {
+        const d = parseTs(ts), today = new Date();
+        const y = new Date(today); y.setDate(today.getDate() - 1);
+        if (d.toDateString() === today.toDateString()) return 'Today';
+        if (d.toDateString() === y.toDateString()) return 'Yesterday';
+        return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+    }
+
     async function updateUnclassified() {
         try {
-            const r = await fetch('/api/unclassified');
-            const dets = (await r.json()).filter(ftMatches);
+            const all = await (await fetch('/api/unclassified')).json();
+            document.getElementById('badge-unclass').textContent = all.length;
+            const shown = all.filter(ftMatches);
+            const sig = shown.map(d => d.id).join(',');
+            if (sig === triage.signature && !triage.held) return;
 
-            document.getElementById('badge-unclass').textContent = dets.length;
-
-            const list = document.getElementById('unclass-list');
-            if (!dets.length) {
-                list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>';
+            const before = new Set(triage.shown.map(d => d.id));
+            const added = shown.filter(d => !before.has(d.id));
+            if (triage.selected.size && added.length && triage.shown.length) {
+                // Apply removals now (labelled elsewhere), hold additions back.
+                triage.held = shown;
+                const pill = document.getElementById('triage-new');
+                pill.textContent = `${added.length} new — show`;
+                pill.hidden = false;
+                renderSheet(shown.filter(d => before.has(d.id)));
                 return;
             }
-
-            list.innerHTML = dets.map(d => `
-                <div class="det-item">
-                    <div class="det-label" style="color:var(--text-dim)">ID ${d.id}${ftBadge(d.frame_type)}</div>
-                    <div class="conf-bar-wrap" style="font-size:12px; color:var(--text-dim);">${
-                        d.label === 'motion' ? 'motion — unclassified, no model ran' : 'unknown object'}</div>
-                    <div class="det-time">${timeAgo(d.timestamp)}</div>
-                    <button class="label-btn" onclick="openLabelModal(${d.id})">Label</button>
-                </div>`
-            ).join('');
+            renderSheet(shown);
         } catch {}
+    }
+
+    function showHeldNew() {
+        if (triage.held) renderSheet(triage.held);
+    }
+
+    function renderSheet(rows) {
+        triage.held = null;
+        document.getElementById('triage-new').hidden = true;
+        const sig = rows.map(d => d.id).join(',');
+        if (sig === triage.signature) return;
+        triage.signature = sig;
+        triage.shown = rows;
+        const ids = new Set(rows.map(d => d.id));
+        triage.selected.forEach(id => { if (!ids.has(id)) triage.selected.delete(id); });
+
+        const list = document.getElementById('unclass-list');
+        if (!rows.length) {
+            list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>';
+            updateSelectionUi();
+            return;
+        }
+
+        // Group by day, then by image domain: "Today · IR night" is a natural
+        // unit to dismiss in one go, and it keeps day and night visibly apart.
+        // One group per (day, domain) however the types interleave in time;
+        // groups ordered by their newest clip. Display order — and so every
+        // index used for ranges and "next clip" — follows the groups.
+        const byKey = new Map();
+        rows.forEach(d => {
+            const key = `${dayHeading(d.timestamp)} · ${DOMAIN_NAMES[domainOf(d)] || 'Unsettled'}`;
+            if (!byKey.has(key)) byKey.set(key, []);
+            byKey.get(key).push(d);
+        });
+        const groups = [...byKey].map(([key, items]) => ({ key, items }));
+        rows = groups.flatMap(g => g.items);
+        triage.shown = rows;
+        let n = 0;
+        groups.forEach(g => { g.items = g.items.map(d => [d, n++]); });
+
+        list.innerHTML = groups.map((g, gi) => `
+            <div class="tgroup-head">
+                <label><input type="checkbox" data-group="${gi}"> ${escHtml(g.key)}</label>
+                <span style="font-weight:400">${g.items.length}</span>
+            </div>
+            <div class="sheet">${g.items.map(([d, i]) => tileHtml(d, i)).join('')}</div>`
+        ).join('');
+        list.querySelectorAll('[data-group]').forEach(cb => {
+            const members = groups[+cb.dataset.group].items.map(([d]) => d.id);
+            cb.addEventListener('change', () => {
+                members.forEach(id => cb.checked ? triage.selected.add(id) : triage.selected.delete(id));
+                updateSelectionUi();
+            });
+        });
+        updateSelectionUi();
+    }
+
+    function tileHtml(d, i) {
+        const t = parseTs(d.timestamp);
+        const hhmm = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const kind = d.label === 'motion' ? 'motion' : 'unknown';
+        // A model confidence is only information when a model produced one.
+        const conf = d.confidence > 0 ? ` · ${(d.confidence * 100).toFixed(0)}%` : '';
+        const title = `#${d.id} · ${fmtTime(d.timestamp)} · `
+            + (d.label === 'motion' ? 'motion, no model ran' : 'model was not sure');
+        return `
+            <div class="tile${triage.selected.has(d.id) ? ' selected' : ''}" tabindex="0"
+                 data-id="${d.id}" data-idx="${i}" title="${escHtml(title)}">
+                <img loading="lazy" decoding="async" src="/api/detection/${d.id}/thumb" alt="">
+                <span class="tcheck"></span>
+                <button class="topen" data-open="${d.id}" tabindex="-1">Label</button>
+                <div class="tmeta"><span>${hhmm}</span>${ftBadge(d.frame_type)}<span class="tkind">${kind}${conf}</span></div>
+            </div>`;
+    }
+
+    function updateSelectionUi() {
+        const n = triage.selected.size;
+        document.getElementById('sel-count').textContent = `${n} selected`;
+        document.getElementById('btn-bulk').disabled = n === 0;
+        const all = document.getElementById('sel-all');
+        all.checked = n > 0 && n === triage.shown.length;
+        all.indeterminate = n > 0 && n < triage.shown.length;
+        document.querySelectorAll('#unclass-list .tile').forEach(t =>
+            t.classList.toggle('selected', triage.selected.has(+t.dataset.id)));
+        document.querySelectorAll('#unclass-list [data-group]').forEach(cb => {
+            const ids = [...cb.closest('.tgroup-head').nextElementSibling.querySelectorAll('.tile')]
+                .map(t => +t.dataset.id);
+            const k = ids.filter(id => triage.selected.has(id)).length;
+            cb.checked = k > 0 && k === ids.length;
+            cb.indeterminate = k > 0 && k < ids.length;
+        });
+    }
+
+    function toggleTile(idx, range) {
+        if (range && triage.anchor !== null) {
+            const [a, b] = [Math.min(triage.anchor, idx), Math.max(triage.anchor, idx)];
+            for (let i = a; i <= b; i++) triage.selected.add(triage.shown[i].id);
+        } else {
+            const id = triage.shown[idx].id;
+            triage.selected.has(id) ? triage.selected.delete(id) : triage.selected.add(id);
+        }
+        triage.anchor = idx;
+        updateSelectionUi();
+    }
+
+    function selectAllShown(on) {
+        triage.shown.forEach(d => on ? triage.selected.add(d.id) : triage.selected.delete(d.id));
+        updateSelectionUi();
+    }
+
+    function clearSelection() {
+        triage.selected.clear();
+        triage.anchor = null;
+        updateSelectionUi();
+        if (triage.held) showHeldNew();
+    }
+
+    (function wireSheet() {
+        const list = document.getElementById('unclass-list');
+        list.addEventListener('click', evt => {
+            const open = evt.target.closest('[data-open]');
+            if (open) { openLabelModal(+open.dataset.open); return; }
+            const tile = evt.target.closest('.tile');
+            if (tile) toggleTile(+tile.dataset.idx, evt.shiftKey);
+        });
+        list.addEventListener('dblclick', evt => {
+            const tile = evt.target.closest('.tile');
+            if (tile) openLabelModal(+tile.dataset.id);
+        });
+    })();
+
+    // Arrow keys move between tiles by position on screen, so up/down work
+    // across group headings and any number of columns.
+    function moveTileFocus(key) {
+        const tiles = [...document.querySelectorAll('#unclass-list .tile')];
+        if (!tiles.length) return;
+        const cur = tiles.indexOf(document.activeElement);
+        if (cur < 0) { tiles[0].focus(); return; }
+        if (key === 'ArrowLeft' || key === 'ArrowRight') {
+            const next = tiles[cur + (key === 'ArrowRight' ? 1 : -1)];
+            if (next) next.focus();
+            return;
+        }
+        const r = tiles[cur].getBoundingClientRect();
+        const down = key === 'ArrowDown';
+        let best = null, bestScore = Infinity;
+        tiles.forEach(t => {
+            const q = t.getBoundingClientRect();
+            const dy = down ? q.top - r.top : r.top - q.top;
+            if (dy <= 1) return;
+            const score = dy * 1000 + Math.abs(q.left - r.left);
+            if (score < bestScore) { best = t; bestScore = score; }
+        });
+        if (best) best.focus();
+    }
+
+    function sheetKeydown(evt) {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(evt.target.tagName)) return false;
+        const tile = document.activeElement && document.activeElement.closest
+            && document.activeElement.closest('#unclass-list .tile');
+        const k = evt.key;
+        if (k.startsWith('Arrow')) { moveTileFocus(k); return true; }
+        if (k === ' ' && tile) { toggleTile(+tile.dataset.idx, evt.shiftKey); return true; }
+        if (k === 'Enter' && tile) { openLabelModal(+tile.dataset.id); return true; }
+        if (k === 'a' || k === 'A') { selectAllShown(true); return true; }
+        if (k === 'n' || k === 'N') { bulkNoHeron(); return true; }
+        if ((k === 'u' || k === 'U') && triage.lastBatch) { undoBulk(); return true; }
+        if (k === 'Escape' && triage.selected.size) { clearSelection(); return true; }
+        return false;
+    }
+
+    async function postJson(url, body) {
+        const r = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                     body: JSON.stringify(body) });
+        const d = await r.json();
+        if (!r.ok || d.success === false) throw new Error(d.error || `HTTP ${r.status}`);
+        return d;
+    }
+
+    // Preview first: the dialog shows which training set every clip would go
+    // to, and which cannot be filed in bulk, before anything is written.
+    async function bulkNoHeron() {
+        const ids = [...triage.selected];
+        if (!ids.length) { toast('Select clips first — click them, or press A for all shown', 'info'); return; }
+        let p;
+        try {
+            p = await postJson('/api/label/bulk', { detection_ids: ids, label: 'background', preview: true });
+        } catch (e) { toast('Cannot check the selection: ' + e.message, 'error'); return; }
+        triage.preview = ids;
+
+        const filed = Object.entries(p.filed);
+        const total = filed.reduce((s, [, n]) => s + n, 0);
+        const lines = filed.map(([dom, n]) => dom === 'no clip'
+            ? `<li>${n} with no clip on disk — marked, nothing written</li>`
+            : `<li><strong>${n}</strong> → ${DOMAIN_NAMES[dom]} set <code>labeled/${dom}/</code></li>`).join('');
+        const reasons = {};
+        p.left.forEach(x => { reasons[x.reason] = (reasons[x.reason] || 0) + 1; });
+        const left = p.left.length ? `
+            <details class="confirm-left"><summary>${p.left.length} cannot be filed in bulk and will stay in triage</summary>
+            <ul class="confirm-list">${Object.entries(reasons).map(([r, n]) =>
+                `<li>${n} × ${escHtml(r)}</li>`).join('')}</ul></details>` : '';
+        document.getElementById('bulk-title').textContent =
+            `Mark ${total} clip${total === 1 ? '' : 's'} as no heron?`;
+        document.getElementById('bulk-body').innerHTML = `
+            <div style="font-size:13px;">Each clip's thumbnail frame — the one you looked at,
+            and only that one — is saved as a background example: <em>no heron in this frame</em>.
+            These are the negative examples the model has never had.</div>
+            <ul class="confirm-list">${lines || '<li>Nothing can be filed.</li>'}</ul>${left}`;
+        document.getElementById('btn-bulk-confirm').disabled = total === 0;
+        document.getElementById('bulk-modal').classList.add('open');
+    }
+
+    function closeBulkConfirm() {
+        document.getElementById('bulk-modal').classList.remove('open');
+        triage.preview = null;
+    }
+
+    async function confirmBulk() {
+        const ids = triage.preview;
+        closeBulkConfirm();
+        if (!ids) return;
+        try {
+            const d = await postJson('/api/label/bulk', { detection_ids: ids, label: 'background' });
+            const n = Object.values(d.filed).reduce((s, k) => s + k, 0);
+            const where = Object.entries(d.filed).map(([dom, k]) => `${k} ${dom}`).join(', ');
+            toast(`Filed ${n} as no heron (${where})`
+                  + (d.left.length ? ` · ${d.left.length} left in triage` : ''), 'success', 5000);
+            triage.lastBatch = d.batch_id;
+            document.getElementById('btn-undo-bulk').hidden = !d.batch_id;
+            ids.forEach(id => triage.selected.delete(id));
+            d.left.forEach(x => triage.selected.add(x.id));   // still to deal with
+            updateAll();
+        } catch (e) { toast('Bulk label failed: ' + e.message, 'error'); }
+    }
+
+    async function undoBulk() {
+        if (!triage.lastBatch) return;
+        try {
+            const d = await postJson('/api/label/bulk/undo', { batch_id: triage.lastBatch });
+            toast(`Undone: ${d.restored} back in triage, ${d.files_removed} files removed`
+                  + (d.kept.length ? ` · ${d.kept.length} relabelled since, kept` : ''), 'success');
+            triage.lastBatch = null;
+            document.getElementById('btn-undo-bulk').hidden = true;
+            updateAll();
+        } catch (e) { toast('Undo failed: ' + e.message, 'error'); }
     }
 
     // ── Gallery ──────────────────────────────────────────────────────
@@ -1497,6 +1934,20 @@
         if ((evt.ctrlKey || evt.metaKey) && evt.key === 'z') {
             undoBox(); evt.preventDefault();
         }
+    });
+
+    // Keys outside the label modal: the bulk confirmation, then the sheet.
+    document.addEventListener('keydown', evt => {
+        if (document.getElementById('bulk-modal').classList.contains('open')) {
+            if (evt.key === 'Enter' && !document.getElementById('btn-bulk-confirm').disabled) {
+                confirmBulk(); evt.preventDefault();
+            }
+            if (evt.key === 'Escape') { closeBulkConfirm(); evt.preventDefault(); }
+            return;
+        }
+        if (document.getElementById('label-modal').classList.contains('open')) return;
+        if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
+        if (sheetKeydown(evt)) evt.preventDefault();
     });
 
     async function saveLabel() {
