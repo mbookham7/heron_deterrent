@@ -235,7 +235,12 @@ def frame_thumb(detection_id):
     frame = max(0, request.args.get('frame', 0, type=int))
     path, generated = system.thumbnails.get(detection['video_path'], frame)
     if path is None:
-        return "cannot decode frame", 500
+        # The clip is there but unreadable — e.g. 0 bytes after a power cut
+        # mid-write. Not a server fault, and cacheable, so the sheet does not
+        # ask again on every re-render.
+        response = Response("clip is unreadable", 422)
+        response.headers['Cache-Control'] = 'max-age=300'
+        return response
     response = send_file(path, mimetype='image/jpeg', max_age=86400)
     response.headers['X-Thumb'] = 'miss' if generated else 'hit'
     return response

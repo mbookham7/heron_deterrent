@@ -239,6 +239,29 @@ def test_every_saved_clip_gets_its_thumbnail_at_save_time():
         "a clip saved outside _save_clip gets no save-time thumbnail"
 
 
+def test_endpoint_says_a_zero_byte_clip_is_unreadable_not_a_server_error():
+    """Found on the Pi: a power cut mid-write left a 0-byte clip with a
+    database row. It must not 500, and the answer must be cacheable."""
+    with tempfile.TemporaryDirectory() as t:
+        clip = Path(t) / 'media' / 'motion' / 'motion_ir_9.mp4'
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b'')
+        rows = {9: {'id': 9, 'video_path': str(clip)}}
+
+        class _DB:
+            def get_detection(self, i): return rows.get(i)
+
+        class _System:
+            database = _DB()
+            thumbnails = ThumbnailCache(Path(t) / 'thumbs', Path(t) / 'media')
+
+        from ui import app as ui_app
+        ui_app.init_app(_System())
+        r = ui_app.app.test_client().get('/api/detection/9/thumb')
+        assert r.status_code == 422, r.status_code
+        assert 'max-age' in r.headers.get('Cache-Control', '')
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0
