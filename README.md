@@ -202,7 +202,10 @@ resident — full table in [docs/legacy/coral/](docs/legacy/coral/README.md).
 
 ### Accuracy — read the caveat, and re-derive with the script
 
-Reproduce every number here with `python tools/measure_thresholds.py`. That
+The table below is the original stock-photo measurement; the alert threshold
+was re-measured on field footage in 2026-11 (next section). The script now
+needs a negatives set named explicitly (`--negatives DIR` or
+`--negatives-labelled data/heron.db`) — `media/` is no longer one. That
 script simulates the camera before scoring positives (centre-crop to 4:3,
 downsample to 640×480) so the harness matches deployment; see
 `tools/camera_sim.py` for why not doing so overstates recall by roughly a
@@ -237,8 +240,49 @@ for a bang whose false alarm is nearly free.
 
 These scores were measured with `tflite-runtime` and TensorFlow; the Pi runs
 the same model file under LiteRT. The output shapes match, but **the scores
-have not been re-derived under LiteRT on the Pi**. They should be identical or
-very close; nobody has checked.
+have not been re-derived under LiteRT on the Pi**. One spot check since: the
+key frames of two heron videos scored on the Pi (LiteRT) and on a Mac
+(TensorFlow) agreed to within 0.002.
+
+### Alert threshold, measured (2026-11-27): 0.95 → 0.90
+
+Two phone videos of a wild heron, uploaded through the dashboard, came back
+"no alert": the model scored their key frames 0.92–0.95, and the alert needed
+3 of 5 at 0.95. The threshold was re-measured with `tools/measure_thresholds.py`
+after fixing it to vote the way the device does (5 s clips, `main.py`'s own 5
+key frames, 3 must clear — it used to count any 3 frames of a whole file):
+
+```bash
+python tools/measure_thresholds.py --negatives <62 labelled clips> \
+    --positives <the two videos> --positives-source camera
+```
+
+- **Negatives:** the 62 daylight clips labelled "background" or "person" in the
+  dashboard — 1,550 frames, worst 0.845.
+- **Positives:** the two videos, one heron, cut into 27 live-length clips; 16
+  have the bird in view throughout (in the rest the phone pans off it,
+  checked by eye).
+
+| Alert threshold, 3 of 5 | False alerts (62) | Heron-in-view clips alerting (16) | Above worst negative |
+|---|---|---|---|
+| 0.95 (old) | 0 | **0** | +0.105 |
+| 0.94 | 0 | 1 | +0.095 |
+| 0.92 | 0 | 12 | +0.075 |
+| **0.90 (now)** | **0** | **13** | **+0.055** |
+| 0.88 | 0 | 15 | +0.035 |
+| 0.85 | 0 | 16 | +0.005 |
+
+The script picks the lowest threshold with no false alerts that also clears
+the worst negative frame by `--margin` (0.05): 0.90, equal to
+`deter_threshold`. It misses the heron when it is further off and scores
+0.83–0.90.
+
+**How far to trust it:** one bird, filmed on a phone rather than the ELP
+camera, and windows of the same video are not independent. The negatives are
+only the scenes this camera has seen so far; ducks, ripples or reeds at the
+pond may score above 0.845 and eat the margin. Re-run it when there is pond
+footage — `--negatives-labelled data/heron.db` uses every daylight clip you
+have labelled as not a heron.
 
 ---
 
@@ -550,7 +594,7 @@ modes:                         # one per frame type — see "Day and night"
   day:
     model: heron               # registered model name, or null = motion-only
     deter_threshold: 0.90      # fires the deterrent (fast path, single frame)
-    alert_threshold: 0.95      # governs recording + SMS (voted across frames)
+    alert_threshold: 0.90      # governs recording + SMS (voted across frames)
     record_threshold: 0.30     # collect mode only
     deterrent: false           # THE switch for the sound; nothing else gates it
     cooldown_seconds: 10
@@ -666,7 +710,7 @@ there, 640×480 is a crop of the sensor, so nothing is squashed either — see
 | `frame_type.*` | see `config.yaml` | Thresholds for day/IR/dark. Tune with the numbers `preflight` prints |
 | `modes.<mode>.model` | `heron` / `null` | Registered model name, or `null` = motion-only (no inference) |
 | `modes.<mode>.deter_threshold` | `0.90` (day) | Deterrent fires above this. At 0.90: recall 0.41 (18/44) on stock positives with camera simulation, zero false-positive frames. See "Accuracy" |
-| `modes.<mode>.alert_threshold` | `0.95` (day) | Recording + SMS require this AND `k`-of-`m` voting |
+| `modes.<mode>.alert_threshold` | `0.90` (day) | Recording + SMS require this AND `k`-of-`m` voting |
 | `modes.<mode>.record_threshold` | `0.30` (day) | Collect mode records anything above this |
 | `modes.<mode>.deterrent` | `false` | Whether the sound may fire in this mode. The only switch for it |
 | `modes.<mode>.cooldown_seconds` | `10` / `45` / `45` | Minimum gap between triggers |
@@ -750,7 +794,7 @@ A real run on the build Pi, with the service running:
 
 ```
 [PASS] config       ai.target=cpu  classes=1
-       day: model=heron deter=0.9 alert=0.95 record=0.3, silent, cooldown 10s
+       day: model=heron deter=0.9 alert=0.9 record=0.3, silent, cooldown 10s
        ir: motion-only (no model), silent, cooldown 45s
        dark: motion-only (no model), silent, cooldown 45s
 [PASS] modes        3 modes coherent; deterrent silent in every mode

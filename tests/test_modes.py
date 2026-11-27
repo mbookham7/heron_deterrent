@@ -73,8 +73,11 @@ def test_shipped_config_is_valid_and_silent_everywhere():
 
 
 def test_shipped_day_thresholds_unchanged():
+    # A deliberate change updates this line. alert 0.95 -> 0.90 on 2026-11-27,
+    # measured with tools/measure_thresholds.py (README "Alert threshold,
+    # measured").
     day = load_modes(_config())['day']
-    assert (day.deter_threshold, day.alert_threshold) == (0.90, 0.95)
+    assert (day.deter_threshold, day.alert_threshold) == (0.90, 0.90)
 
 
 def test_night_cooldown_is_longer_than_day():

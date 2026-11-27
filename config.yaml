@@ -146,7 +146,7 @@ modes:
   day:
     model: heron
     deter_threshold: 0.90
-    alert_threshold: 0.95
+    alert_threshold: 0.90  # measured 2026-11-27, see README "Alert threshold, measured"
     record_threshold: 0.30
     deterrent: false       # silent everywhere for now; true here is the one switch
     cooldown_seconds: 10

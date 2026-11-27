@@ -12,7 +12,7 @@ was not. That build was on the bench — not in the box, not at the pond, not at
 night.
 
 **Reference values for this build:** `ai.target: cpu`,
-`models/heron_cpu_int8.tflite`, `deter_threshold: 0.90` / `alert_threshold: 0.95`,
+`models/heron_cpu_int8.tflite`, `deter_threshold: 0.90` / `alert_threshold: 0.90`,
 service `heron-deterrent`, user `pi`, SSH key `~/.ssh/heron_pi`.
 
 ---
@@ -262,7 +262,7 @@ a couple of seconds:
 
 ```
 Video encoder: /usr/bin/ffmpeg with libx264 (preset veryfast)
-Mode day: model=heron deter=0.9 alert=0.95 record=0.3, silent, cooldown 10s
+Mode day: model=heron deter=0.9 alert=0.9 record=0.3, silent, cooldown 10s
 Mode ir: motion-only (no model), silent, cooldown 45s
 Mode dark: motion-only (no model), silent, cooldown 45s
 INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
@@ -316,12 +316,14 @@ COLLECT MODE ON: recording day events above 0.3
    `sqlite3 data/heron.db "select id,timestamp,label,confidence from detections order by id desc limit 5"`
 
 Also note Test Upload runs the **alert** path (`alert_threshold`, k-of-m
-voting), never the deter path — its docstring says so explicitly. It therefore
-cannot validate `deter_threshold`. Since only 1 of the 44 stock positives
-clears 0.95, a genuine heron clip will usually come back `unknown` here even
-though the model is working perfectly.
+voting), never the deter path, so it cannot sound the deterrent. Its result
+lists every key frame's score, the votes, and how many key frames would have
+fired the deterrent as a live trigger frame. At the old `alert_threshold` of
+0.95 two real heron videos came back "No alert" with key frames at 0.92–0.95;
+that is what led to the 0.90 measurement in the README.
 
-(Both traps were found on the Coral; Test Upload has not been run on the Pi.)
+(Both traps were first found on the Coral. Test Upload was run on the Pi on
+2026-11-27.)
 
 `Ctrl-C` when satisfied.
 
@@ -503,8 +505,9 @@ Three warnings:
 
 - **Never pull into this repo's `media/`.** That directory is the curated
   reference set behind every threshold in both repos, and
-  `tools/measure_thresholds.py` reads it as verified negatives. Mixing board
-  clips into it silently corrupts the ground truth. Use a separate directory.
+  It used to be `tools/measure_thresholds.py`'s default negatives set; the
+  script now refuses to guess, but mixing board clips into it still destroys
+  what it was a record of. Use a separate directory.
 - **One pull directory per board.** The Coral's clips are a different board,
   scene and possibly camera — treat them as a different image domain. Pulling
   the Pi into the Coral's old
