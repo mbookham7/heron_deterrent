@@ -546,6 +546,62 @@ def trigger_deterrent():
         logger.error(f"Error triggering deterrent: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+UPLOAD_MAX_SIDE = 640        # the camera's own width; the model sees 320
+UPLOAD_MAX_SECONDS = 120
+
+
+def load_upload(path: str, target_fps: float, max_side: int = UPLOAD_MAX_SIDE,
+                max_seconds: float = UPLOAD_MAX_SECONDS):
+    """Decode an uploaded video the way the camera would have produced it:
+    at most `max_side` px on the long side, at the camera's frame rate, and
+    no longer than `max_seconds`. Frames are thinned and shrunk while
+    decoding, so memory holds only what is kept.
+
+    Before this, a 11 s 1080x1920 phone video at 30 fps was held whole —
+    about 2 GB — then re-encoded at full size (~22 s of Pi CPU beside
+    detection) and saved at 5 fps, so it played six times too slow.
+    Returns (frames, info)."""
+    cap = cv2.VideoCapture(path)
+    frames = []
+    info = {'source_fps': 0.0, 'source_size': None, 'size': None,
+            'frames_read': 0, 'truncated': False}
+    try:
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        if not 1 <= src_fps <= 240:
+            src_fps = float(target_fps)          # unknown: keep every frame
+        info['source_fps'] = round(src_fps, 2)
+        step = max(1.0, src_fps / target_fps)
+        limit = int(max_seconds * src_fps)
+        next_keep = 0.0
+        index = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if index >= limit:
+                info['truncated'] = True
+                break
+            if index >= next_keep:
+                next_keep += step
+                h, w = frame.shape[:2]
+                info['source_size'] = [w, h]
+                scale = max_side / max(h, w)
+                if scale < 1:
+                    frame = cv2.resize(frame, (round(w * scale), round(h * scale)),
+                                       interpolation=cv2.INTER_AREA)
+                frames.append(frame)
+            index += 1
+        info['frames_read'] = index
+    finally:
+        cap.release()
+    if frames:
+        h, w = frames[0].shape[:2]
+        info['size'] = [w, h]
+    info['frames_processed'] = len(frames)
+    info['seconds'] = round(len(frames) / target_fps, 1)
+    return frames, info
+
+
 @app.route('/api/upload-test-video', methods=['POST'])
 def upload_test_video():
     if not system:
@@ -567,49 +623,31 @@ def upload_test_video():
         try:
             os.close(tmp_fd)
             video_file.save(tmp_path)
-
-            cap = cv2.VideoCapture(tmp_path)
-            frames = []
-            frame_count = 0
-            try:
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    frames.append(frame)
-                    frame_count += 1
-            finally:
-                cap.release()
+            frames, info = load_upload(
+                tmp_path, system.config.get('system.frame_rate', 5))
         finally:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
 
-        if frames:
-            # Same rule as the live loop: a model runs only on the domain it
-            # was trained for. An IR or dark upload would get a confident,
-            # meaningless daylight score — refuse it instead.
-            frame_type = system.classify_clip(frames)
-            mode = system.modes.get(frame_type)
-            if mode is None or mode.motion_only:
-                return jsonify({
-                    'success': False,
-                    'error': f"clip classifies as {frame_type or 'mixed/ambiguous'}; "
-                             f"no model is configured for that frame type",
-                })
-            system.process_detection_event(frames, mode, {'source': 'upload'})
-            detections = system.database.get_detections(limit=10)
-            heron_detections = [d for d in detections if d.get('label') == 'heron']
-
-            return jsonify({
-                'success': True,
-                'frames_processed': frame_count,
-                'herons_detected': len(heron_detections),
-                'detections': heron_detections
-            })
-        else:
+        if not frames:
             return jsonify({'success': False, 'error': 'No frames extracted'})
+
+        # Same rule as the live loop: a model runs only on the domain it
+        # was trained for. An IR or dark upload would get a confident,
+        # meaningless daylight score — refuse it instead.
+        frame_type = system.classify_clip(frames)
+        mode = system.modes.get(frame_type)
+        if mode is None or mode.motion_only:
+            return jsonify({
+                'success': False,
+                'error': f"clip classifies as {frame_type or 'mixed/ambiguous'}; "
+                         f"no model is configured for that frame type",
+            })
+        result = system.process_detection_event(frames, mode, {'source': 'upload'})
+        return jsonify({'success': True, **info, **result,
+                        'herons_detected': 1 if result['label'] == 'heron' else 0})
 
     except Exception as e:
         logger.error(f"Error processing uploaded video: {e}")

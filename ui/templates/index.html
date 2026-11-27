@@ -2340,14 +2340,13 @@
                 setTimeout(() => { progressWrap.style.display = 'none'; }, 800);
 
                 resultsDiv.style.display = 'block';
-                document.getElementById('results-text').innerHTML =
-                    `Frames processed: <strong>${d.frames_processed}</strong> &nbsp;·&nbsp; ` +
-                    `Herons detected: <strong style="color:var(--${d.herons_detected > 0 ? 'red' : 'green'})">${d.herons_detected}</strong>`;
+                document.getElementById('results-text').innerHTML = uploadSummary(d);
 
-                toast(d.herons_detected > 0
-                    ? `Heron detected in test video (${d.herons_detected} detection${d.herons_detected > 1 ? 's' : ''})`
-                    : 'No herons found in test video',
-                    d.herons_detected > 0 ? 'error' : 'success');
+                const heron = d.label === 'heron';
+                toast(heron ? 'Heron confirmed in test video — alert raised'
+                    : d.at_deter > 0 ? `No alert: ${d.votes} of ${d.needed} key frames reached ${d.alert_threshold}`
+                    : 'No heron found in test video',
+                    heron ? 'error' : 'success');
 
                 updateAll();
             } else {
@@ -2362,6 +2361,30 @@
         }
 
         document.getElementById('video-upload').value = '';
+    }
+
+    // What the upload did, in the live system's terms: the alert vote, and
+    // how many key frames would have fired the deterrent had one of them been
+    // the live trigger frame (uploads never fire it).
+    function uploadSummary(d) {
+        const pct = x => (x * 100).toFixed(0) + '%';
+        const scores = d.scores.map(x => {
+            const c = x >= d.alert_threshold ? 'var(--red)' : x >= d.deter_threshold ? 'var(--yellow)' : 'inherit';
+            return `<strong style="color:${c}">${x.toFixed(2)}</strong>`;
+        }).join(' ');
+        const size = d.source_size && d.size && d.source_size[0] !== d.size[0]
+            ? `${d.size[0]}×${d.size[1]} (from ${d.source_size[0]}×${d.source_size[1]})`
+            : d.size ? `${d.size[0]}×${d.size[1]}` : '';
+        return [
+            `<div><strong style="color:var(--text)">${d.label === 'heron'
+                ? 'Heron — alert raised' : 'No alert'}</strong> · best key frame ${pct(d.confidence)}</div>`,
+            `<div>Key frames: ${scores}</div>`,
+            `<div>Alert needs ${d.needed} of ${d.scores.length} at ≥ ${d.alert_threshold}: got <strong>${d.votes}</strong></div>`,
+            `<div>Deterrent fires on one live trigger frame ≥ ${d.deter_threshold}: `
+                + `<strong>${d.at_deter}</strong> of ${d.scores.length} key frames would (uploads never sound it)</div>`,
+            `<div style="margin-top:4px">${d.frames_processed} frames · ${d.seconds} s at the camera's rate · ${size}`
+                + (d.truncated ? ' · <strong>only the first 120 s</strong>' : '') + `</div>`,
+        ].join('');
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

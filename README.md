@@ -992,7 +992,7 @@ both Ethernet and Wi-Fi connected it answers on both addresses.
 | POST | `/api/label/bulk` | `{detection_ids, label: "background", preview?}` — frame 0 of each clip, each to its own domain; returns `filed` per domain, `left` (with reasons) and a `batch_id`. `preview` writes nothing |
 | POST | `/api/label/bulk/undo` | `{batch_id}` of the latest batch: delete exactly its files, return its clips to triage |
 | POST | `/api/trigger-deterrent` | Manual speaker test. Plays regardless of mode |
-| POST | `/api/upload-test-video` | Run inference on an uploaded video. Refused unless every key frame is a day frame |
+| POST | `/api/upload-test-video` | Run the alert vote on an uploaded video, decoded as the camera would see it (≤ 640 px, the camera's frame rate, first 120 s). Returns every key frame's score, the votes, and how many key frames clear the deterrent threshold — uploads never sound it. Refused unless every key frame is a day frame |
 | GET | `/api/media/<filename>` | Serve a stored clip |
 
 `/api/trigger-deterrent` is the best speaker test there is: it plays through the
@@ -1177,7 +1177,7 @@ the fix.
    at 0.75 recall on stock positives is 0.84 vs 0.41 at the shipped 0.90 — but 18%
    of your bench footage also clears that bar, so the deterrent will fire more)
 4. Is the heron too far away? See "Mounting distance"
-5. Upload a clip via the dashboard's Test Upload to confirm inference works
+5. Upload a clip via the dashboard's Test Upload to confirm inference works. It runs the **alert** vote (k of m key frames at `alert_threshold`), which is stricter than the deterrent's single frame at `deter_threshold`: "No alert" with key frames at 0.92–0.94 means the model saw the heron and the alert threshold was not reached, not that it was missed
 6. `sudo journalctl -u heron-deterrent -f`
 
 ### False triggers

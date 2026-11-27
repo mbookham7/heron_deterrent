@@ -21,7 +21,7 @@ from capture.camera import Camera
 from capture.motion_detector import MotionDetector
 from capture.frame_classifier import FrameTypeTracker, classify_frame, clip_frame_types
 from ai.model_loader import ModelLoader
-from ai.detector import ObjectDetector
+from ai.detector import Detection, ObjectDetector
 from utils.modes import load_modes, load_frame_type_config
 from deterrent.audio_player import AudioPlayer
 from alerts.mqtt_client import MQTTClient
@@ -286,9 +286,31 @@ class HeronDeterrentSystem:
             vote_k=self.alert_vote_k,
         )
 
+        # Reporting only — the verdict above is already decided. A failed vote
+        # comes back as 'unknown' at 0.00, which hid near-misses: a test upload
+        # whose key frames scored 0.93-0.95 against a 0.95 alert threshold
+        # showed as "0%". Keep each key frame's score, and store the best one.
+        scores = [round(float(d.confidence), 4) if d.label == "heron" else 0.0
+                  for d in detections]
+        vote = {
+            'scores': scores,
+            'votes': sum(sc >= mode.alert_threshold for sc in scores),
+            'needed': self.alert_vote_k,
+            'alert_threshold': mode.alert_threshold,
+            'at_deter': sum(sc >= mode.deter_threshold for sc in scores),
+            'deter_threshold': mode.deter_threshold,
+        }
+        metadata = metadata if metadata is not None else {}
+        metadata['vote'] = vote
+        if final_detection.label == "unknown" and scores and max(scores) > 0:
+            final_detection = Detection("unknown", max(scores))
+
         video_path = self._save_clip(video_clip, final_detection.label, mode.name)
 
         self.handle_detection_result(final_detection, video_path, mode, metadata)
+        return {'label': final_detection.label,
+                'confidence': float(final_detection.confidence),
+                'video_path': video_path, **vote}
 
     def _save_clip(self, frames: list, label: str, frame_type: str) -> str:
         """Save the clip, then its triage thumbnail from frame 0 while it is
