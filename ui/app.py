@@ -737,7 +737,10 @@ def serve_media(filename):
         logger.warning(f"Path traversal attempt blocked: {filename}")
         return "Forbidden", 403
 
-    return send_file(filepath)
+    # Absolute: config paths are relative ('./media'), and send_file resolves
+    # a relative path against this package's directory (ui/), not the working
+    # directory — every heron clip in the gallery 500ed on the Pi.
+    return send_file(filepath.resolve())
 
 def start_web_ui(heron_system, host='0.0.0.0', port=5000):
     init_app(heron_system)

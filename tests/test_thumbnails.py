@@ -262,6 +262,31 @@ def test_endpoint_says_a_zero_byte_clip_is_unreadable_not_a_server_error():
         assert 'max-age' in r.headers.get('Cache-Control', '')
 
 
+def test_gallery_clip_serves_with_relative_config_paths():
+    """/api/media/<file> had the same relative-path bug as the thumbnail
+    endpoint: found on the Pi when the first heron clip would not play."""
+    import os
+    from storage.media_store import MediaStore
+    with tempfile.TemporaryDirectory() as t:
+        old = os.getcwd()
+        os.chdir(t)
+        try:
+            clip = _clip(Path('media') / 'heron' / 'heron_day_1.mp4')
+
+            class _System:
+                media_store = MediaStore('media')            # relative, as in config
+
+            from ui import app as ui_app
+            ui_app.init_app(_System())
+            r = ui_app.app.test_client().get('/api/media/heron_day_1.mp4')
+            assert r.status_code == 200, r.status_code
+            assert r.data == clip.read_bytes()
+            r = ui_app.app.test_client().get('/api/media/../../etc/passwd')
+            assert r.status_code in (403, 404), r.status_code
+        finally:
+            os.chdir(old)
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0
