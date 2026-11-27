@@ -19,14 +19,21 @@
 # positives worth measuring, not successes worth counting.
 #
 # Anyone reaching for media/heron/ as a positives set is reading the
-# model's opinion of itself. Do not do this. Ground truth lives in
-# directories a human curated:
+# model's opinion of itself. Do not do this. Ground truth is what a human
+# curated:
 #
-#   * negatives — media/ (recursive, WITHOUT excluding media/heron/)
-#     Every frame in there is a verified true negative today.
+#   * negatives — REQUIRED, no default. Either --negatives DIR (clips a
+#     person has checked) or --negatives-labelled data/heron.db: every
+#     daylight clip labelled in the dashboard as anything but heron. media/
+#     USED to be the default, when every clip in it was bench footage with
+#     no bird. It stopped being true on 2026-11-27: the dashboard's test
+#     upload saves heron videos into media/unknown/, so a default run would
+#     have counted real herons as negatives.
 #   * positives — ../heron-data/heron_project/dataset/val/images/
 #     44 real heron images. Same stock-photo domain as training, so they
 #     flatter the model; they are provisional until field positives exist.
+#     Videos of a heron (e.g. phone footage) can be passed with
+#     --positives-source camera.
 #
 # WHY THIS EXISTS
 #
@@ -51,6 +58,30 @@
 # sets are required to be disjoint, and a non-empty intersection aborts
 # the run rather than being silently reconciled.
 #
+# WHY THE ALERT VOTE IS SIMULATED, NOT APPROXIMATED
+#
+# The device votes on each 5 s clip (25 frames at 5 fps): main.py picks 5
+# key frames with key_frame_indices and needs alert_vote_k of them at
+# alert_threshold. An earlier version of this script asked instead "do ANY
+# k frames of the file clear it". That is wrong in both directions, and the
+# first field positives showed it (2026-11-27):
+#   * a still image is one frame, so alert recall was 0.00 at EVERY
+#     threshold — the sweep could not choose;
+#   * a 340-frame phone video has 3 frames over almost anything, so it
+#     reported the 0.95 threshold catching a heron the device had missed.
+# Files are now cut into live-clip-length windows (after thinning video to
+# the camera's frame rate) and each window is voted exactly as main.py
+# does, using main.py's own key_frame_indices. Still images cannot be
+# voted on; alert recall is reported as n/a for them.
+#
+# WHY THE SUGGESTED ALERT THRESHOLD KEEPS A MARGIN
+#
+# "Maximise recall with no false alerts" alone picks the lowest threshold
+# just above the worst negative — 0.85 against a worst negative frame of
+# 0.845 on the first field run. A new kind of negative (a duck, ripples)
+# only has to score 0.006 higher to alert. The suggestion now also has to
+# clear the worst negative frame by --margin (default 0.05).
+#
 # CAMERA-SIMULATION FIX
 #
 # An earlier version letterboxed 1536x2048 stock positives straight to the
@@ -69,7 +100,7 @@
 #
 # USAGE
 #
-#   python tools/measure_thresholds.py
+#   python tools/measure_thresholds.py --negatives-labelled data/heron.db
 #   python tools/measure_thresholds.py --positives /path/to/heron_images \
 #                                      --negatives /path/to/no_heron_clips \
 #                                      --positives-source stock \
@@ -99,6 +130,14 @@ from ai.detector import ObjectDetector             # noqa: E402
 from ai.model_loader import ModelLoader            # noqa: E402
 from utils.config_loader import Config             # noqa: E402
 
+# The device's own key-frame choice, imported rather than copied so the
+# simulated vote cannot drift from the real one.
+from main import HeronDeterrentSystem              # noqa: E402
+key_frame_indices = HeronDeterrentSystem.key_frame_indices
+
+# main.py captures every voting clip with capture_video_clip(duration_seconds=5).
+LIVE_CLIP_SECONDS = 5
+
 # Extract every Nth frame from each clip. Default 1 = every frame, because
 # skipping frames systematically misses the tails of the score distribution,
 # and the tail of the negatives distribution is exactly what governs how safe
@@ -121,7 +160,8 @@ Transform = Callable[[Frame], Frame]
 
 
 def iter_frames(path: Path, step: int,
-                transform: Optional[Transform] = None) -> Iterable[Frame]:
+                transform: Optional[Transform] = None,
+                target_fps: Optional[float] = None) -> Iterable[Frame]:
     """Yield frames from a file. Images: one frame. Videos: every `step`th.
 
     If `transform` is provided, it is applied to each frame BEFORE yielding.
@@ -130,6 +170,10 @@ def iter_frames(path: Path, step: int,
     frame_scores, per-clip aggregation) sees pixels that match what the
     device would have received. A raw-imread path here would silently
     inflate recall on high-resolution stock images.
+
+    `target_fps` thins video recorded faster than the camera (a 30 fps phone
+    video) to the camera's rate, so a live-clip-length window covers the
+    same seconds the device would see. Camera clips are untouched.
     """
     suffix = path.suffix.lower()
     if suffix in IMAGE_SUFFIXES:
@@ -143,6 +187,9 @@ def iter_frames(path: Path, step: int,
 
     cap = cv2.VideoCapture(str(path))
     try:
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        if target_fps and src_fps > target_fps * 1.5:
+            step = step * max(1, round(src_fps / target_fps))
         i = 0
         while True:
             ok, frame = cap.read()
@@ -200,12 +247,13 @@ def collect_scores(files: List[Path], detector: ObjectDetector,
 
 def frame_scores(files: List[Path], detector: ObjectDetector,
                  step: int, label: str,
-                 transform: Optional[Transform] = None) -> List[float]:
+                 transform: Optional[Transform] = None,
+                 target_fps: Optional[float] = None) -> List[float]:
     """Per-FRAME scores across every file. Needed for deter-threshold policy,
     which fires on a single frame."""
     all_scores = []
     for i, path in enumerate(files, start=1):
-        for f in iter_frames(path, step, transform):
+        for f in iter_frames(path, step, transform, target_fps):
             all_scores.append(score_frame(detector, f))
         if i % 5 == 0 or i == len(files):
             print(f"  {label}: {i}/{len(files)}", file=sys.stderr)
@@ -214,34 +262,57 @@ def frame_scores(files: List[Path], detector: ObjectDetector,
 
 def per_clip_scores(files: List[Path], detector: ObjectDetector,
                     step: int,
-                    transform: Optional[Transform] = None) -> List[List[float]]:
+                    transform: Optional[Transform] = None,
+                    target_fps: Optional[float] = None) -> List[List[float]]:
     """Per-clip lists of per-frame scores. Feeds voting analysis."""
     out = []
     for path in files:
-        scores = [score_frame(detector, f) for f in iter_frames(path, step, transform)]
+        scores = [score_frame(detector, f)
+                  for f in iter_frames(path, step, transform, target_fps)]
         if scores:
             out.append(scores)
     return out
 
 
-def voting_recall(per_clip_frame_scores: List[List[float]],
-                  threshold: float, k: int) -> float:
-    """Fraction of clips where at least k frames score >= threshold."""
-    if not per_clip_frame_scores:
-        return 0.0
-    hits = sum(1 for scores in per_clip_frame_scores
-               if sum(s >= threshold for s in scores) >= k)
-    return hits / len(per_clip_frame_scores)
+def live_windows(per_clip_frame_scores: List[List[float]], clip_frames: int,
+                 m: int) -> List[List[float]]:
+    """What the device would vote on: each file cut into consecutive
+    live-clip-length windows, each reduced to its m key frames exactly as
+    main.py picks them. A file no longer than one clip is one window. A
+    trailing remainder shorter than half a clip is dropped (the device never
+    votes on a stub). Files with fewer than m frames — still images — give
+    no window: the vote cannot be run on them."""
+    out = []
+    for scores in per_clip_frame_scores:
+        if len(scores) < m:
+            continue
+        if len(scores) <= clip_frames:
+            chunks = [scores]
+        else:
+            chunks = [scores[i:i + clip_frames]
+                      for i in range(0, len(scores), clip_frames)]
+            chunks = [c for c in chunks if len(c) >= max(m, clip_frames // 2)]
+        for c in chunks:
+            out.append([c[i] for i in key_frame_indices(len(c), m)])
+    return out
 
 
-def voting_precision_proxy(negative_per_clip_frame_scores: List[List[float]],
+def voting_recall(windows: List[List[float]], threshold: float, k: int) -> float:
+    """Fraction of key-frame windows (see live_windows) with at least k
+    key frames >= threshold. NaN when there is nothing to vote on."""
+    if not windows:
+        return float('nan')
+    hits = sum(1 for w in windows if sum(s >= threshold for s in w) >= k)
+    return hits / len(windows)
+
+
+def voting_precision_proxy(negative_windows: List[List[float]],
                            threshold: float, k: int) -> float:
-    """Fraction of NEGATIVE clips voting NEGATIVE. 1.0 = perfect."""
-    if not negative_per_clip_frame_scores:
+    """Fraction of NEGATIVE windows voting NEGATIVE. 1.0 = perfect."""
+    if not negative_windows:
         return 1.0
-    passes = sum(1 for scores in negative_per_clip_frame_scores
-                 if sum(s >= threshold for s in scores) >= k)
-    return 1.0 - passes / len(negative_per_clip_frame_scores)
+    passes = sum(1 for w in negative_windows if sum(s >= threshold for s in w) >= k)
+    return 1.0 - passes / len(negative_windows)
 
 
 def percentile(vals: List[float], p: float) -> float:
@@ -273,7 +344,27 @@ def describe(name: str, vals: List[float]) -> None:
 # Defaults are separated so tests and the guard can reference them by name.
 # See the header for the ground-truth principle these encode.
 DEFAULT_POSITIVES = Path('../heron-data/heron_project/dataset/val/images')
-DEFAULT_NEGATIVES = Path('media')
+DEFAULT_NEGATIVES = None      # deliberately none — see the header
+DEFAULT_MARGIN = 0.05
+
+
+def labelled_negatives(db_path: Path, frame_type: str = 'day') -> List[Path]:
+    """Clips a person labelled in the dashboard as anything but heron, of
+    one frame type (the day model is only ever shown day clips). Missing or
+    empty files are skipped — a power cut can leave a 0-byte clip."""
+    import sqlite3
+    with sqlite3.connect(f'file:{db_path}?mode=ro', uri=True) as conn:
+        rows = conn.execute(
+            "SELECT video_path FROM detections WHERE manually_labeled = 1 "
+            "AND user_label IS NOT NULL AND user_label != 'heron' "
+            "AND frame_type = ? AND video_path IS NOT NULL AND video_path != ''",
+            (frame_type,)).fetchall()
+    out = []
+    for (path,) in rows:
+        p = Path(path)
+        if p.is_file() and p.stat().st_size > 0:
+            out.append(p)
+    return sorted(out)
 
 
 class OverlappingSetsError(RuntimeError):
@@ -283,7 +374,7 @@ class OverlappingSetsError(RuntimeError):
 
 
 def check_disjoint(pos_files: List[Path], neg_files: List[Path],
-                   pos_root: Path, neg_root: Path) -> None:
+                   pos_root: Path, neg_root: Optional[Path]) -> None:
     """Refuse to run if positives and negatives overlap.
 
     Two cases both count as overlap:
@@ -300,8 +391,10 @@ def check_disjoint(pos_files: List[Path], neg_files: List[Path],
     # config problem (--positives vs --negatives) rather than the resulting
     # file collision, which is downstream.
     pos_root_r = pos_root.resolve()
-    neg_root_r = neg_root.resolve()
-    if pos_root_r == neg_root_r:
+    neg_root_r = neg_root.resolve() if neg_root is not None else None
+    if neg_root_r is None:
+        pass                  # labelled negatives: no root, file check below
+    elif pos_root_r == neg_root_r:
         raise OverlappingSetsError(
             f"--positives and --negatives point at the same directory "
             f"({pos_root_r}). One set is entirely inside the other."
@@ -336,15 +429,20 @@ def check_disjoint(pos_files: List[Path], neg_files: List[Path],
 
 def _pick_alert_threshold(pos_per_clip: List[List[float]],
                           neg_per_clip: List[List[float]],
-                          k: int) -> Tuple[float, float, float]:
+                          k: int, floor: float = 0.0) -> Tuple[float, float, float]:
     """Sweep candidate alert thresholds and return the (t, recall, precision)
-    that maximises recall subject to precision-proxy >= 0.99. Falls back to
-    the highest-precision candidate if nothing meets that bar."""
+    that maximises recall subject to precision-proxy >= 0.99 and t >= floor
+    (the worst negative frame plus a margin). Inputs are key-frame windows
+    (live_windows). Falls back to the highest-precision candidate if nothing
+    meets that bar. With no positive windows there is nothing to choose
+    by — (nan, nan, nan)."""
     if not (pos_per_clip and neg_per_clip):
-        return 0.95, 0.0, 1.0
+        return float('nan'), float('nan'), float('nan')
     best = None
     for t in np.arange(0.60, 0.981, 0.01):
         t = float(round(t, 2))
+        if t < floor - 1e-9:
+            continue
         prec = voting_precision_proxy(neg_per_clip, t, k)
         rec  = voting_recall(pos_per_clip, t, k)
         if prec >= 0.99 and (best is None or rec > best[1]):
@@ -352,11 +450,13 @@ def _pick_alert_threshold(pos_per_clip: List[List[float]],
     if best is None:
         for t in np.arange(0.60, 0.981, 0.01):
             t = float(round(t, 2))
+            if t < floor - 1e-9:
+                continue
             prec = voting_precision_proxy(neg_per_clip, t, k)
             rec  = voting_recall(pos_per_clip, t, k)
             if best is None or prec > best[2] or (prec == best[2] and rec > best[1]):
                 best = (t, rec, prec)
-    return best
+    return best if best is not None else (float('nan'), float('nan'), float('nan'))
 
 
 # The CLI still speaks in 'crop'/'pad' because callers and docs are written
@@ -380,7 +480,8 @@ def _build_transform(source: str, sim_mode: str,
 
 def _measure_positives(files: List[Path], detector: ObjectDetector,
                        step: int, label: str,
-                       transform: Optional[Transform]
+                       transform: Optional[Transform],
+                       target_fps: Optional[float] = None,
                        ) -> Tuple[List[float], List[List[float]]]:
     """Score positives once with a single transform. Returns (per_frame,
     per_clip). Runs frame_scores and per_clip_scores in one pass to avoid
@@ -389,7 +490,7 @@ def _measure_positives(files: List[Path], detector: ObjectDetector,
     per_clip: List[List[float]] = []
     for i, path in enumerate(files, start=1):
         clip: List[float] = []
-        for f in iter_frames(path, step, transform):
+        for f in iter_frames(path, step, transform, target_fps):
             s = score_frame(detector, f)
             clip.append(s)
             all_scores.append(s)
@@ -407,10 +508,16 @@ def main():
                     help=f"dir of images or MP4s containing herons "
                          f"(default: {DEFAULT_POSITIVES} — 44 stock heron "
                          f"images, provisional until field positives exist)")
-    ap.add_argument('--negatives', type=Path, default=DEFAULT_NEGATIVES,
-                    help=f"dir of images or MP4s containing NO herons "
-                         f"(default: {DEFAULT_NEGATIVES}, walked recursively; "
-                         f"every clip in there is a verified true negative)")
+    neg = ap.add_mutually_exclusive_group(required=True)
+    neg.add_argument('--negatives', type=Path,
+                     help="dir of clips a person has checked contain NO heron "
+                          "(walked recursively). No default: media/ is not "
+                          "ground truth — see the header")
+    neg.add_argument('--negatives-labelled', type=Path, metavar='DB',
+                     help="use every day clip labelled in the dashboard as "
+                          "anything but heron, from this database "
+                          "(e.g. data/heron.db; run from the repo root so its "
+                          "relative clip paths resolve)")
     ap.add_argument('--positives-source', choices=('stock', 'camera'),
                     default='stock',
                     help="Provenance of the positives directory. 'stock' = "
@@ -433,6 +540,9 @@ def main():
                     help="N-of-M voting: min hits (default 3)")
     ap.add_argument('--m', type=int, default=5,
                     help="N-of-M voting: window size (default 5, matches key-frame count)")
+    ap.add_argument('--margin', type=float, default=DEFAULT_MARGIN,
+                    help=f"the suggested alert threshold must clear the worst "
+                         f"negative frame by this much (default {DEFAULT_MARGIN})")
     args = ap.parse_args()
 
     if not args.positives.exists():
@@ -444,8 +554,12 @@ def main():
               file=sys.stderr)
         return 2
 
-    if not args.negatives.exists():
+    if args.negatives is not None and not args.negatives.exists():
         print(f"ERROR: negatives directory not found: {args.negatives}",
+              file=sys.stderr)
+        return 2
+    if args.negatives_labelled is not None and not args.negatives_labelled.exists():
+        print(f"ERROR: database not found: {args.negatives_labelled}",
               file=sys.stderr)
         return 2
 
@@ -471,7 +585,15 @@ def main():
 
     # ---- Collect file lists and refuse overlap -----------------------------
     pos_files = collect_paths(args.positives)
-    neg_files = collect_paths(args.negatives)
+    if args.negatives is not None:
+        neg_files = collect_paths(args.negatives)
+        neg_source = str(args.negatives)
+    else:
+        neg_files = labelled_negatives(args.negatives_labelled)
+        neg_source = f"day clips labelled not-heron in {args.negatives_labelled}"
+    if not neg_files:
+        print(f"ERROR: no negatives found ({neg_source})", file=sys.stderr)
+        return 2
     try:
         check_disjoint(pos_files, neg_files, args.positives, args.negatives)
     except OverlappingSetsError as e:
@@ -482,10 +604,13 @@ def main():
     # No simulation on negatives: they are already camera-native and their
     # distribution matches an independent 275-frame measurement to three
     # decimal places. Do not touch this path.
-    print(f"\n=== Negatives ({args.negatives}) ===", file=sys.stderr)
+    fps = float(config.get('system.frame_rate', 5))
+    clip_frames = int(LIVE_CLIP_SECONDS * fps)
+    print(f"\n=== Negatives ({neg_source}) ===", file=sys.stderr)
     print(f"  {len(neg_files)} file(s)", file=sys.stderr)
-    neg_frame_scores = frame_scores(neg_files, detector, args.step, 'neg')
-    neg_per_clip = per_clip_scores(neg_files, detector, args.step)
+    neg_frame_scores, neg_per_clip = _measure_positives(
+        neg_files, detector, args.step, 'neg', None, fps)
+    neg_windows = live_windows(neg_per_clip, clip_frames, args.m)
 
     # ---- Positives ---------------------------------------------------------
     # Which simulation modes to run positives through. When source=camera,
@@ -510,10 +635,10 @@ def main():
         print(f"  scoring positives under sim={mode}...", file=sys.stderr)
         frames, per_clip = _measure_positives(
             pos_files, detector, args.step, f'pos({mode})',
-            transforms[mode],
+            transforms[mode], fps,
         )
         pos_frame_by_mode[mode] = frames
-        pos_per_clip_by_mode[mode] = per_clip
+        pos_per_clip_by_mode[mode] = live_windows(per_clip, clip_frames, args.m)
 
     # Canonical mode: what the "Suggested config" line uses. Crop matches a
     # real camera; identity is the only option for camera-source runs; pad is
@@ -550,8 +675,37 @@ def main():
     else:
         deter, deter_recall, deter_fpr = 0.90, 0.0, 0.0
 
+    worst_neg = max(neg_frame_scores) if neg_frame_scores else 0.0
+    floor = worst_neg + args.margin
     alert_t, alert_recall, alert_prec = _pick_alert_threshold(
-        canonical_pos_per_clip, neg_per_clip, args.k)
+        canonical_pos_per_clip, neg_windows, args.k, floor)
+
+    # ---- Alert sweep, voted the way the device votes ----------------------
+    # A window where every key frame scores >= IN_VIEW_HINT is shown as a
+    # separate column: in phone footage the camera pans off the bird, and
+    # those windows hold no heron to find. It is score-based, so it is a
+    # hint to check by eye — it never feeds the suggestion above.
+    IN_VIEW_HINT = 0.5
+    in_view = [w for w in canonical_pos_per_clip if min(w) >= IN_VIEW_HINT]
+    print("\n" + "=" * 60)
+    print(f"Alert vote as the device runs it: {LIVE_CLIP_SECONDS} s clips "
+          f"({clip_frames} frames at {fps:g} fps), {args.m} key frames, "
+          f"{args.k} must clear")
+    print(f"  negative windows: {len(neg_windows)}   positive windows: "
+          f"{len(canonical_pos_per_clip)} ({len(in_view)} with every key frame "
+          f">= {IN_VIEW_HINT} — check by eye that the heron is in view)")
+    print(f"  worst negative frame: {worst_neg:.3f}")
+    if canonical_pos_per_clip:
+        print(f"\n  {'t':>5}  {'false alerts':>13}  {'pos alerting':>13}  "
+              f"{'in-view alerting':>16}  {'margin':>7}")
+        for t in np.arange(0.80, 0.971, 0.01):
+            t = float(round(t, 2))
+            fa = sum(sum(v >= t for v in w) >= args.k for w in neg_windows)
+            tp = sum(sum(v >= t for v in w) >= args.k for w in canonical_pos_per_clip)
+            iv = sum(sum(v >= t for v in w) >= args.k for w in in_view)
+            print(f"  {t:5.2f}  {fa:>6}/{len(neg_windows):<6}  "
+                  f"{tp:>6}/{len(canonical_pos_per_clip):<6}  "
+                  f"{iv:>8}/{len(in_view):<7}  {t - worst_neg:+7.3f}")
 
     print("\n" + "=" * 60)
     print(f"Suggested config (measured, canonical positives={canonical})")
@@ -559,11 +713,16 @@ def main():
     print(f"    per-frame:  recall={deter_recall:.2f}  fpr={deter_fpr:.3f}")
     print(f"    intent:     one confident frame fires the sound; false bang cheap, "
           f"late bang expensive.")
-    print(f"\n  modes.day.alert_threshold: {alert_t}")
+    if np.isnan(alert_t):
+        print(f"\n  modes.day.alert_threshold: n/a — no positive has {args.m}+ "
+              f"frames to vote on (still images). Pass heron VIDEOS to measure it.")
+    else:
+        print(f"\n  modes.day.alert_threshold: {alert_t}")
     print(f"  ai.alert_vote_k:    {args.k}")
     print(f"  ai.alert_vote_m:    {args.m}")
-    print(f"    per-clip N-of-M ({args.k}-of-{args.m}):"
-          f" recall={alert_recall:.2f}  precision-proxy={alert_prec:.2f}")
+    print(f"    per-window N-of-M ({args.k}-of-{args.m}):"
+          f" recall={alert_recall:.2f}  precision-proxy={alert_prec:.2f}"
+          f"  (lowest t >= worst negative {worst_neg:.3f} + margin {args.margin})")
     print(f"    intent:     record + notify only when the clip sustains a heron "
           f"call across frames.")
 
@@ -596,13 +755,13 @@ def main():
     for mode in modes:
         per_clip = pos_per_clip_by_mode[mode]
         rec = voting_recall(per_clip, current_alert, current_k)
-        prec = voting_precision_proxy(neg_per_clip, current_alert, current_k)
+        prec = voting_precision_proxy(neg_windows, current_alert, current_k)
         marker = ' (canonical)' if mode == canonical else ''
         print(f"    sim={mode}{marker}: recall={rec:.2f}  precision-proxy={prec:.2f}")
 
     print(f"\nCopy into config.yaml -> modes: day:")
     print(f"    deter_threshold: {deter}")
-    print(f"    alert_threshold: {alert_t}")
+    print(f"    alert_threshold: {alert_t if not np.isnan(alert_t) else '(unmeasured)'}")
     print(f"and into config.yaml -> ai:")
     print(f"  alert_vote_k: {args.k}")
     print(f"  alert_vote_m: {args.m}")

@@ -119,16 +119,19 @@ def test_shared_file_is_rejected_even_from_unrelated_roots():
         assert False, "expected OverlappingSetsError"
 
 
-def test_default_wiring_is_disjoint():
-    """The shipping defaults must themselves pass the guard, or the very
-    thing they encode (disjoint sets) is broken from day one."""
-    from tools.measure_thresholds import DEFAULT_NEGATIVES, DEFAULT_POSITIVES
-    pos_r = DEFAULT_POSITIVES.resolve()
-    neg_r = DEFAULT_NEGATIVES.resolve()
-    assert pos_r != neg_r
-    assert pos_r not in neg_r.parents
-    assert neg_r not in pos_r.parents
-
+def test_negatives_have_no_default():
+    """media/ was the default negatives set until the test upload started
+    saving heron videos into it. A default there would silently count
+    herons as negatives, so there is none: the run refuses without
+    --negatives or --negatives-labelled."""
+    import subprocess
+    from tools.measure_thresholds import DEFAULT_NEGATIVES
+    assert DEFAULT_NEGATIVES is None
+    repo = Path(__file__).resolve().parent.parent
+    r = subprocess.run([sys.executable, 'tools/measure_thresholds.py'],
+                       cwd=repo, capture_output=True, text=True)
+    assert r.returncode == 2
+    assert '--negatives' in r.stderr and 'required' in r.stderr
 
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
