@@ -193,6 +193,7 @@ its XNNPACK CPU delegate, 4 threads, 640×640 model), on the bench:
 | Motion → deterrent sound | **not measured on the Pi** | 1.02 s on the Coral. The deterrent is silent in every mode as shipped, so no real event has played it |
 | Saved clip size | 170 KB mean (5 s, 640×480, 5 fps, H.264) | 16 indoor clips on the bench; outdoor clips will differ |
 | Saved clip size, IR | 18–278 KB | 4 indoor IR clips. 278 KB is a person walking through; the small ones are near-static dark scenes |
+| Flushing a saved clip to the card | median 22 ms, max 33 ms | 20 real clips, 104–426 KB, file + directory `fsync`. Runs after the deterrent and the encode, so a power cut can no longer leave a database row pointing at an empty clip (`storage/durable.py`) |
 | Resident memory | 206 MB | The running service, `ps` RSS |
 | CPU, idle pond | ~55% of one core | The running service with no inference: motion detection, frame typing, dashboard |
 

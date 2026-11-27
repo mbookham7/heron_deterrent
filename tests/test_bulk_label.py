@@ -118,6 +118,31 @@ def test_each_clip_lands_in_its_own_domain_and_the_rest_stay_in_triage():
         assert rows[6]['user_label'] == 'cat'
 
 
+def test_a_clip_whose_files_cannot_be_flushed_stays_in_triage():
+    """storage/durable.py: label files must reach the card before the row
+    says 'labelled'. If one clip's cannot, that clip stays in triage and the
+    rest of the batch is filed and undoable — the batch is not aborted."""
+    import unittest.mock as mock
+    from storage import media_store
+    with tempfile.TemporaryDirectory() as t:
+        client, rows, labeled = _harness(Path(t))
+        real = media_store.make_durable
+
+        def fails_for_ir(*paths):
+            if any('/ir/' in str(p) for p in paths):
+                raise OSError('EIO')
+            return real(*paths)
+        with mock.patch.object(media_store, 'make_durable', side_effect=fails_for_ir):
+            r = client.post('/api/label/bulk', json={'detection_ids': [1, 2],
+                                                     'label': 'background'})
+        body = r.get_json()
+        assert r.status_code == 200 and body['filed'] == {'day': 1}, body
+        assert [x['id'] for x in body['left']] == [2]
+        assert 'could not save' in body['left'][0]['reason']
+        assert rows[1]['user_label'] == 'background' and not rows[2]['manually_labeled']
+        assert body['batch_id']
+
+
 def test_the_filed_frame_is_frame_zero():
     """One frame per clip, and it is the thumbnail frame — the only one the
     operator looked at. Frame 0 of the test clip is black; frame 2 is 80."""

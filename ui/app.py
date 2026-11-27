@@ -394,9 +394,15 @@ def _label_one(detection, label, bboxes, frame_index, requested_domain, dry_run=
             # empty .txt is written. That IS a valid YOLO background example.
             write_boxes = bboxes if label in LABELS_REQUIRING_BBOX else []
             _validate_pixel_boxes(write_boxes, native_w, native_h)
-            written = list(system.media_store.save_labeled_image(
-                frame, label, write_boxes, detection_id, frame_type=domain
-            ))
+            try:
+                written = list(system.media_store.save_labeled_image(
+                    frame, label, write_boxes, detection_id, frame_type=domain
+                ))
+            except OSError as e:
+                # Not flushed to the card (storage/durable.py): refuse this
+                # clip rather than record a label whose files a power cut
+                # could empty. In bulk it stays in triage; the rest go on.
+                raise LabelRefused(500, f'could not save the label files: {e}')
         finally:
             cap.release()
     elif dry_run:

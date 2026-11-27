@@ -10,6 +10,7 @@ from typing import List, Tuple, Optional
 import logging
 
 from capture.frame_classifier import FRAME_TYPES, UNSETTLED
+from storage.durable import make_durable
 from storage.video_encoder import encode_h264
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,15 @@ class MediaStore:
             # reported no error. See storage/video_encoder.py for why cv2 cannot
             # do H.264 on this hardware and what it costs to do it properly.
             encode_h264(frames, str(filepath), self.fps)
+            # On the card before the caller writes the database row that
+            # points at it — see storage/durable.py. A failure here is
+            # logged, not fatal: the clip is complete in memory and will
+            # very likely reach the card; dropping it would lose it for sure.
+            try:
+                make_durable(filepath)
+            except OSError as e:
+                logger.error(f"Could not flush {filepath} to disk ({e}); "
+                             f"a power cut in the next ~30 s could empty it")
             logger.info(f"Saved video: {filepath}")
 
             return str(filepath)
@@ -196,6 +206,12 @@ class MediaStore:
                 # negative example — never as a fictitious class 1.
                 if label == "heron":
                     f.write(f"0 {x_center} {y_center} {norm_w} {norm_h}\n")
+
+        # Hand labels are the most expensive data on the device: both files
+        # reach the card before the database records the clip as labelled.
+        # Here a failure is raised — the label is reported as not saved and
+        # can simply be made again.
+        make_durable(image_path, label_path)
 
         logger.info(f"Saved labeled data: {frame_type}/{base_name}"
                     + ("" if label == "heron" else " (as a background/negative example)"))
