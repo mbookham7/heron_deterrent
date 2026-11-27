@@ -32,6 +32,20 @@
             line-height: 1.5;
         }
 
+        /* ── Icons (inline sprite, see top of <body>) ── */
+        .ic {
+            width: 1.15em;
+            height: 1.15em;
+            flex-shrink: 0;
+            vertical-align: -0.2em;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        .card-title .ic { color: var(--text-dim); }
+
         /* ── Scrollbar ── */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -70,7 +84,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 18px;
+            font-size: 20px;
+            color: #fff;
         }
 
         .topbar-status {
@@ -391,10 +406,10 @@
             margin-top: 1px;
         }
 
-        .feed-icon.critical { background: rgba(248,81,73,0.15); }
-        .feed-icon.warning  { background: rgba(210,153,34,0.15); }
-        .feed-icon.info     { background: rgba(88,166,255,0.15); }
-        .feed-icon.motion   { background: rgba(163,113,247,0.12); }
+        .feed-icon.critical { background: rgba(248,81,73,0.15); color: var(--red); }
+        .feed-icon.warning  { background: rgba(210,153,34,0.15); color: var(--yellow); }
+        .feed-icon.info     { background: rgba(88,166,255,0.15); color: var(--blue); }
+        .feed-icon.motion   { background: rgba(163,113,247,0.12); color: var(--purple); }
 
         .feed-content { flex: 1; min-width: 0; }
         .feed-msg { color: var(--text); word-break: break-word; }
@@ -498,7 +513,7 @@
             color: var(--text);
         }
 
-        .drop-zone-icon { font-size: 28px; margin-bottom: 8px; }
+        .drop-zone-icon { font-size: 26px; margin-bottom: 6px; }
         .drop-zone p { font-size: 13px; }
         .drop-zone small { font-size: 11px; color: var(--text-mute); }
 
@@ -578,6 +593,9 @@
         .toast.success { border-left: 3px solid var(--green); }
         .toast.error   { border-left: 3px solid var(--red); }
         .toast.info    { border-left: 3px solid var(--blue); }
+        .toast.success .toast-ic { color: var(--green); }
+        .toast.error   .toast-ic { color: var(--red); }
+        .toast.info    .toast-ic { color: var(--blue); }
 
         @keyframes slideIn {
             from { transform: translateX(100%); opacity: 0; }
@@ -597,7 +615,7 @@
             font-size: 13px;
         }
 
-        .empty-icon { font-size: 28px; margin-bottom: 8px; }
+        .empty-icon { font-size: 26px; margin-bottom: 6px; color: var(--text-mute); }
 
         /* ── Triage contact sheet ──
            Triage is visual: every row used to read "unknown object". Tiles
@@ -912,12 +930,33 @@
     </style>
 </head>
 <body>
+<!-- Icons: one inline sprite, drawn for this page. No icon font, no CDN —
+     the dashboard must work on a LAN with no internet. Used as
+     an svg.ic with a use pointing at #i-NAME, or icon(NAME) in script;
+     stroke and colour come from CSS (currentColor). -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+    <symbol id="i-heron" viewBox="0 0 24 24"><path d="M17.5 3.5c-1.3 0-2.2.9-2.2 2 0 1.5 1.1 2.3 1.1 3.8 0 2.2-2.4 3.1-4.7 4.4-2 1.1-3.4 2.6-4.2 4.3"/><path d="M15.4 5.2 9 6.6"/><path d="M16.2 10.8c.5 2.6-1.1 4.5-4.6 5.4"/><path d="M10.5 15.8v5"/><path d="M13 15.5v5"/><path d="M9 20.8h3M12 20.8h3"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7.5 4v16M16.5 4v16M3 9h4.5M3 15h4.5M16.5 9H21M16.5 15H21"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5z"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12.5 5v14l-5-4.5H4z"/><path d="M16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4.5M7.5 9 12 4.5 16.5 9"/><path d="M4 14.5V19a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M10.3 4.2 2.8 17.5A2 2 0 0 0 4.5 20.5h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17v.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+</svg>
 <div class="app">
 
     <!-- Top bar -->
     <header class="topbar">
         <div class="topbar-brand">
-            <div class="brand-icon">🦅</div>
+            <div class="brand-icon"><svg class="ic" aria-hidden="true"><use href="#i-heron"/></svg></div>
             Heron Deterrent
         </div>
         <div class="topbar-status">
@@ -975,7 +1014,7 @@
             <!-- Herons: a panel only when there is something in it -->
             <div class="card" id="herons-card" hidden>
                 <div class="card-header">
-                    <span class="card-title">🎬 Herons</span>
+                    <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-film"/></svg> Herons</span>
                     <span class="badge red" id="badge-herons">0</span>
                 </div>
                 <div class="det-list" id="heron-det-list"></div>
@@ -989,7 +1028,7 @@
                  thumbnail frame as a background example in its own domain. -->
             <div class="card" id="triage-card">
                 <div class="card-header">
-                    <span class="card-title">❓ To Triage <span class="badge" id="badge-unclass">0</span></span>
+                    <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg> To Triage <span class="badge" id="badge-unclass">0</span></span>
                     <span class="triage-keys">
                         click selects · shift-click a range · double-click labels ·
                         <kbd>←↑↓→</kbd> <kbd>Space</kbd> <kbd>Enter</kbd> <kbd>A</kbd> <kbd>N</kbd>
@@ -1018,7 +1057,7 @@
                     <span class="new-pill" id="triage-new" hidden onclick="showHeldNew()"></span>
                 </div>
                 <div class="triage-body" id="unclass-list">
-                    <div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>
+                    <div class="empty"><div class="empty-icon"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></div>Nothing to triage</div>
                 </div>
             </div>
         </section>
@@ -1028,7 +1067,7 @@
             <!-- Live stream -->
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">📹 Live Feed</span>
+                    <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-video"/></svg> Live Feed</span>
                     <span class="badge" id="badge-live">LOADING</span>
                 </div>
                 <div class="card-body" style="padding: 12px;">
@@ -1042,31 +1081,31 @@
                     </div>
                     <div class="btn-row">
                         <button class="btn btn-danger btn-sm" onclick="triggerDeterrent()"
-                                title="Plays a deterrent sound now. Manual test only — the automatic deterrent follows modes.<mode>.deterrent">🔊 Test Speaker</button>
+                                title="Plays a deterrent sound now. Manual test only — the automatic deterrent follows modes.<mode>.deterrent"><svg class="ic" aria-hidden="true"><use href="#i-speaker"/></svg> Test Speaker</button>
                     </div>
                 </div>
             </div>
 
             <!-- Herons, when there are none: one line, not a half-screen card -->
-            <div class="card side-line" id="herons-none">🦅 No herons detected yet</div>
+            <div class="card side-line" id="herons-none"><svg class="ic" aria-hidden="true"><use href="#i-heron"/></svg> No herons detected yet</div>
 
             <!-- Recent alerts, grouped: identical consecutive alerts are one row -->
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">🚨 Recent Alerts</span>
+                    <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg> Recent Alerts</span>
                     <span class="badge" id="badge-alerts">0</span>
                 </div>
                 <div class="feed" id="alerts-feed">
-                    <div class="empty"><div class="empty-icon">🔔</div>No alerts yet</div>
+                    <div class="empty"><div class="empty-icon"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg></div>No alerts yet</div>
                 </div>
             </div>
 
             <!-- Tools: needed occasionally, so out of the way -->
             <details class="card tools">
-                <summary class="card-header"><span class="card-title">📤 Tools — test video upload</span></summary>
+                <summary class="card-header"><span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg> Tools — test video upload</span></summary>
                 <div class="card-body">
                     <div class="drop-zone" onclick="document.getElementById('video-upload').click()">
-                        <div class="drop-zone-icon">🎥</div>
+                        <div class="drop-zone-icon"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg></div>
                         <p>Click to upload a test video</p>
                         <small>MP4, MOV, AVI, MKV · Max file size depends on server</small>
                         <input type="file" id="video-upload" accept="video/mp4,video/quicktime,video/avi,video/mkv,.mp4,.mov,.avi,.mkv" onchange="uploadVideo()">
@@ -1080,7 +1119,7 @@
                     </div>
 
                     <div id="upload-results" style="display:none; margin-top:14px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:6px;">
-                        <div style="font-size:13px; color:var(--green); font-weight:600; margin-bottom:6px;">✓ Analysis complete</div>
+                        <div style="font-size:13px; color:var(--green); font-weight:600; margin-bottom:6px;"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Analysis complete</div>
                         <div id="results-text" style="font-size:13px; color:var(--text-dim);"></div>
                     </div>
                 </div>
@@ -1099,7 +1138,7 @@
         <div class="modal-header">
             <span class="card-title" id="label-title">Label detection</span>
             <span class="label-pos" id="label-pos"></span>
-            <button class="modal-close" onclick="closeLabelModal()" aria-label="Close (Esc)">×</button>
+            <button class="modal-close" onclick="closeLabelModal()" aria-label="Close (Esc)"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <div class="label-layout">
             <div class="label-main">
@@ -1110,10 +1149,10 @@
                     </div>
                 </div>
                 <div class="frame-nav">
-                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(-1)" title="Previous frame (←, Shift+← for 5)">◀</button>
+                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(-1)" title="Previous frame (←, Shift+← for 5)" aria-label="Previous frame"><svg class="ic" aria-hidden="true"><use href="#i-left"/></svg></button>
                     <input type="range" id="frame-slider" min="0" max="0" value="0"
                            oninput="jumpToFrame(this.value)">
-                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(1)" title="Next frame (→, Shift+→ for 5)">▶</button>
+                    <button class="btn btn-subtle btn-sm" onclick="stepFrame(1)" title="Next frame (→, Shift+→ for 5)" aria-label="Next frame"><svg class="ic" aria-hidden="true"><use href="#i-right"/></svg></button>
                     <span class="frame-counter" id="frame-counter">frame 0 / 0</span>
                 </div>
             </div>
@@ -1176,7 +1215,7 @@
          style="width:min(520px, 96vw);">
         <div class="modal-header">
             <span class="card-title" id="bulk-title">Mark as no heron</span>
-            <button class="modal-close" onclick="closeBulkConfirm()" aria-label="Close">×</button>
+            <button class="modal-close" onclick="closeBulkConfirm()" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <div class="modal-body" id="bulk-body"></div>
         <div class="btn-row" style="padding:0 16px 16px; justify-content:flex-end;">
@@ -1190,12 +1229,17 @@
 <div id="toast-container"></div>
 
 <script>
+    // ── Icons ────────────────────────────────────────────────────────
+    function icon(name, cls = '') {
+        return `<svg class="ic${cls ? ' ' + cls : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+    }
+
     // ── Toast system ────────────────────────────────────────────────
     function toast(message, type = 'info', duration = 3500) {
-        const icons = { success: '✓', error: '✕', info: 'ℹ' };
+        const icons = { success: 'check', error: 'alert', info: 'info' };
         const el = document.createElement('div');
         el.className = `toast ${type}`;
-        el.innerHTML = `<span>${icons[type] || 'ℹ'}</span><span>${message}</span>`;
+        el.innerHTML = `${icon(icons[type] || 'info', 'toast-ic')}<span>${message}</span>`;
         document.getElementById('toast-container').appendChild(el);
         setTimeout(() => {
             el.style.animation = 'slideOut 0.2s ease forwards';
@@ -1365,7 +1409,7 @@
     function renderAlerts(alerts) {
         const feed = document.getElementById('alerts-feed');
         if (!alerts.length) {
-            feed.innerHTML = '<div class="empty"><div class="empty-icon">🔔</div>No alerts yet</div>';
+            feed.innerHTML = `<div class="empty"><div class="empty-icon">${icon('bell')}</div>No alerts yet</div>`;
             return;
         }
         const groups = [];
@@ -1378,8 +1422,8 @@
         feed.innerHTML = groups.map(g => {
             const a = g.items[0], z = g.items[g.items.length - 1];
             const type = (a.type || '').toLowerCase();
-            const icon = type === 'critical' ? '🚨' : type === 'warning' ? '⚠️'
-                       : type === 'motion' ? '🌙' : 'ℹ️';
+            const glyph = icon(type === 'critical' ? 'alert' : type === 'warning' ? 'warn'
+                             : type === 'motion' ? 'moon' : 'info');
             const span = g.items.length > 1
                 ? `${parseTs(z.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}–`
                   + parseTs(a.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
@@ -1396,7 +1440,7 @@
             return `
                 <div class="agroup${alertsOpen.has(a.id) ? ' open' : ''}" data-gid="${a.id}">
                     <div class="agroup-head">
-                        <div class="feed-icon ${type}">${icon}</div>
+                        <div class="feed-icon ${type}">${glyph}</div>
                         <div class="feed-content">
                             <div class="feed-msg">${escHtml(alertTitle(a))}${a.det_frame_type ? ftBadge(a.det_frame_type) : ''}</div>
                             <div class="feed-time">${timeAgo(a.timestamp)} · ${span}</div>
@@ -1436,7 +1480,7 @@
 
             const list = document.getElementById('heron-det-list');
             if (!dets.length) {
-                list.innerHTML = '<div class="empty"><div class="empty-icon">🦅</div>No herons detected yet</div>';
+                list.innerHTML = `<div class="empty"><div class="empty-icon">${icon('heron')}</div>No herons detected yet</div>`;
                 return;
             }
 
@@ -1532,7 +1576,7 @@
 
         const list = document.getElementById('unclass-list');
         if (!rows.length) {
-            list.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div>Nothing to triage</div>';
+            list.innerHTML = `<div class="empty"><div class="empty-icon">${icon('check')}</div>Nothing to triage</div>`;
             updateSelectionUi();
             return;
         }
@@ -1784,7 +1828,7 @@
 
             const gallery = document.getElementById('gallery');
             if (!dets.length) {
-                gallery.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📽️</div>No heron clips yet</div>';
+                gallery.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">${icon('film')}</div>No heron clips yet</div>`;
                 return;
             }
 
@@ -2118,7 +2162,7 @@
                 <span>box ${i + 1}: ${Math.round(b.x)},${Math.round(b.y)}
                       ${Math.round(b.w)}×${Math.round(b.h)}px (native)</span>
                 <button class="box-remove" onclick="removeBox(${i})"
-                        title="Delete this box">✕</button>
+                        title="Delete this box" aria-label="Delete this box">${icon('x')}</button>
             </div>`).join('');
     }
 
