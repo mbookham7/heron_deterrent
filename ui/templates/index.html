@@ -33,6 +33,12 @@
 
             /* Space: a 4 px grid. */
             --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;  --sp-4: 16px;  --sp-5: 24px;
+
+            /* Motion: short, and only opacity / colour / shadow / transform —
+               never a property that makes the browser re-lay out the page. */
+            --dur-fast: 120ms;
+            --dur:      180ms;
+            --ease:     cubic-bezier(0.2, 0.8, 0.2, 1);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -186,7 +192,8 @@
         .agroup-head:hover { background: rgba(255,255,255,0.02); }
         .agroup-count { margin-left: auto; font-size: var(--fs-sm); font-weight: 600; color: var(--text-dim); white-space: nowrap; }
         .agroup-rows { display: none; padding: 0 16px 10px 54px; }
-        .agroup.open .agroup-rows { display: block; }
+        .agroup.open .agroup-rows { display: block; animation: fadeIn var(--dur) var(--ease); }
+        .agroup-head { transition: background-color var(--dur-fast) var(--ease); }
         .arow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: var(--fs-sm); color: var(--text-dim); }
         .arow img { width: 64px; height: 48px; object-fit: contain; background: #000; border-radius: 3px; flex-shrink: 0; }
         .arow.openable { cursor: pointer; }
@@ -283,6 +290,8 @@
             color: var(--text-dim);
             cursor: pointer;
         }
+        .filter-btn { transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+        .filter-btn:hover { color: var(--text); }
         .filter-btn.active { border-color: var(--blue); color: var(--blue); }
 
         .domain-banner {
@@ -389,7 +398,8 @@
             font-size: var(--fs-md);
             font-weight: 500;
             cursor: pointer;
-            transition: opacity 0.15s, transform 0.1s;
+            transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+                        background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
         }
 
         .btn:hover { opacity: 0.85; }
@@ -481,7 +491,7 @@
             height: 100%;
             border-radius: 3px;
             background: linear-gradient(90deg, var(--blue), var(--purple));
-            transition: width 0.4s ease;
+            transition: width 0.4s var(--ease);
         }
 
         .conf-bar.high { background: linear-gradient(90deg, var(--green), var(--blue)); }
@@ -502,7 +512,7 @@
             border: 1px solid var(--border);
             border-radius: 6px;
             overflow: hidden;
-            transition: border-color 0.2s;
+            transition: border-color var(--dur) var(--ease);
         }
 
         .gallery-item:hover { border-color: var(--blue); }
@@ -536,7 +546,7 @@
             padding: 28px;
             text-align: center;
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
             color: var(--text-dim);
         }
 
@@ -629,7 +639,7 @@
             color: var(--text);
             min-width: 260px;
             max-width: 380px;
-            animation: slideIn 0.2s ease;
+            animation: slideIn var(--dur) var(--ease);
         }
 
         .toast.success { border-left: 3px solid var(--green); }
@@ -638,6 +648,19 @@
         .toast.success .toast-ic { color: var(--green); }
         .toast.error   .toast-ic { color: var(--red); }
         .toast.info    .toast-ic { color: var(--blue); }
+
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes rise   { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        #herons-card:not([hidden]) { animation: fadeIn var(--dur) var(--ease); }
+
+        /* Reduced motion: no animation, no transition, no pulsing dot. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
 
         @keyframes slideIn {
             from { transform: translateX(100%); opacity: 0; }
@@ -722,13 +745,14 @@
             cursor: pointer;
             outline: none;
             user-select: none;
+            transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur) var(--ease);
         }
         .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
         .tile.broken::before { content: 'clip unreadable'; position: absolute; inset: 0;
             display: flex; align-items: center; justify-content: center;
             color: var(--text-dim); font-size: var(--fs-sm); }
         .tile:hover { border-color: var(--border-hi); }
-        .tile.selected { border-color: var(--blue); }
+        .tile.selected { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.25); }
         .tile:focus-visible { box-shadow: 0 0 0 2px var(--yellow); }
         .tile .tcheck {
             position: absolute;
@@ -739,6 +763,7 @@
             border-radius: 4px;
             border: 2px solid rgba(255,255,255,0.75);
             background: rgba(0,0,0,0.35);
+            transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
         }
         .tile.selected .tcheck { background: var(--blue); border-color: var(--blue); }
         .tile.selected .tcheck::after {
@@ -764,6 +789,7 @@
             color: #fff;
             cursor: pointer;
             opacity: 0;
+            transition: opacity var(--dur-fast) var(--ease);
         }
         .tile:hover .topen, .tile:focus-visible .topen { opacity: 1; }
         .tile .tmeta {
@@ -804,7 +830,11 @@
             align-items: center;
             justify-content: center;
         }
-        .modal-backdrop.open { display: flex; }
+        .modal-backdrop.open { display: flex; animation: fadeIn var(--dur) var(--ease); }
+        /* Small dialogs rise a little as they appear. The labeller only
+           fades: a transform on it would move the drawing layer under the
+           pointer while it animates (see the COORDINATES note below). */
+        .modal-backdrop.open .modal:not(.label-modal) { animation: rise var(--dur) var(--ease); }
         .modal {
             background: var(--surface);
             border: 1px solid var(--border-hi);
@@ -898,6 +928,8 @@
         }
         .label-choices button:nth-child(-n+2) { grid-column: 1 / -1; }
         .label-choices button small { color: var(--text-mute); margin-left: 4px; }
+        .label-choices button { transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease); }
+        .label-choices button:hover { border-color: var(--text-mute); }
         .label-choices button.active { border-color: var(--blue); background: rgba(88,166,255,0.12); }
         .label-choices button[data-label="heron"].active { border-color: var(--yellow); background: rgba(210,153,34,0.14); }
         .key-help { margin-top: 12px; font-size: var(--fs-sm); color: var(--text-dim); }
