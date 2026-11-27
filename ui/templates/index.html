@@ -166,15 +166,8 @@
         @media (max-width: 1100px) {
             .main { grid-template-columns: 1fr; }
         }
-        /* Phone: enough not to clip or overflow. The real mobile pass is
-           Phase 2, once this layout has been used. */
-        @media (max-width: 700px) {
-            .main { padding: 12px; }
-            .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
-            .topbar-status { flex-wrap: wrap; gap: 6px; }
-            .triage-keys { display: none; }
-            .sheet { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
-        }
+        .sel-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .short { display: none; }
 
         .full-width { grid-column: 1 / -1; }
 
@@ -246,10 +239,6 @@
             display: grid;
             grid-template-columns: repeat(5, 1fr);
             gap: var(--sp-3);
-        }
-
-        @media (max-width: 700px) {
-            .stats-strip { grid-template-columns: repeat(2, 1fr); }
         }
 
         /* ── Frame type (image domain) ──
@@ -1002,6 +991,102 @@
             margin-left: auto;
         }
         .label-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+        /* Touch screens have no hover and no keyboard: show what hover
+           would reveal, and drop the key hints. */
+        @media (hover: none), (pointer: coarse) {
+            kbd, .triage-keys { display: none; }
+            .tile .topen { opacity: 1; }
+        }
+
+        /* ── Phone: glanceable ──
+           Last in the stylesheet on purpose: these override the base rules
+           above at equal specificity, so they must come after them.
+           The first screen answers "is it running, has a heron been, is
+           anything waiting" — status, three numbers, then herons and the
+           latest alerts. Triage follows; the live feed and tools come last.
+           The columns dissolve (display: contents) so their cards can be
+           ordered as one list. Desktop stays dense and is not affected. */
+        @media (max-width: 700px) {
+            /* minmax(0, …): a plain 1fr track grows to its widest content
+               (a long alert line, the sideways filter row) and pushes the
+               page past the screen. */
+            .main { padding: var(--sp-3); gap: var(--sp-3); grid-template-columns: minmax(0, 1fr); }
+            .col-main, .col-side { display: contents; }
+            .stats-strip, .card { min-width: 0; }
+            .triage-keys { display: none; }
+            .stats-strip { order: 1; }
+            #herons-card, #herons-none { order: 2; }
+            #alerts-card { order: 3; }
+            #triage-card { order: 4; }
+            #live-card { order: 5; }
+            #tools-card { order: 6; }
+
+            .topbar { padding: var(--sp-2) var(--sp-3); gap: var(--sp-2); }
+            .brand-name { display: none; }
+            .topbar-status { gap: var(--sp-1); min-width: 0; }
+            .status-pill { padding: 3px 8px; font-size: var(--fs-xs); white-space: nowrap; }
+
+            .stats-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
+            .stat-card { padding: var(--sp-2) var(--sp-3); }
+            .stat-card.secondary { display: none; }
+            .stat-label { font-size: var(--fs-2xs); margin-bottom: var(--sp-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .stat-value { font-size: 24px; }
+            .stat-value.small { font-size: var(--fs-md); line-height: 24px; }
+            .stat-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+            #alerts-card .feed { max-height: 40vh; }
+            .card-header { min-height: 44px; padding: var(--sp-2) var(--sp-3); }
+
+            /* Filters scroll sideways rather than wrap into three rows. */
+            .triage-toolbar { padding: var(--sp-2) var(--sp-3); }
+            .filter-bar { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+            .filter-btn { padding: 6px 12px; white-space: nowrap; }
+            .toolbar-gap { display: none; }
+            .triage-body { padding: 0 var(--sp-3) var(--sp-3); }
+            .sheet { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+            .tile .tmeta { font-size: var(--fs-2xs); padding: 8px 4px 3px; }
+            .tile .tmeta .ft-badge { margin-left: 3px; padding: 0 4px; }
+
+            /* Selection actions: a bar at the bottom, in thumb reach, only
+               while there is something to act on. */
+            .sel-controls {
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 200;
+                padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom));
+                background: var(--surface);
+                border-top: 1px solid var(--border-hi);
+                box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+                transform: translateY(110%);
+                transition: transform var(--dur) var(--ease);
+            }
+            body.has-selection .sel-controls,
+            .sel-controls:has(#btn-undo-bulk:not([hidden])) { transform: none; }
+            body.has-selection .main { padding-bottom: 120px; }
+            .sel-controls .btn-sm { padding: 8px 14px; font-size: var(--fs-md); }
+            .sel-controls kbd { display: none; }
+            .sel-controls .long { display: none; }
+            .sel-controls .short { display: inline; }
+            .sel-controls { flex-wrap: nowrap; gap: var(--sp-2); }
+
+            /* The labeller takes the whole phone screen, and the stage is
+               the camera's 4:3 shape instead of a fixed share of the height,
+               so the frame is not floating in black bars. Only the stage is
+               sized here — never the frame or its drawing layer (see the
+               COORDINATES note): fitFrame() still sizes those. */
+            .modal.label-modal { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; border: none; }
+            .label-main { flex: none; height: auto; padding: var(--sp-2); }
+            .stage { flex: none; width: 100%; aspect-ratio: 4 / 3; }
+            .label-choices button { padding: 10px; }
+
+            #toast-container { left: var(--sp-3); right: var(--sp-3); bottom: var(--sp-3); }
+            .toast { min-width: 0; max-width: none; }
+            body.has-selection #toast-container { bottom: 110px; }
+        }
+
     </style>
 </head>
 <body>
@@ -1032,7 +1117,7 @@
     <header class="topbar">
         <div class="topbar-brand">
             <div class="brand-icon"><svg class="ic" aria-hidden="true"><use href="#i-heron"/></svg></div>
-            Heron Deterrent
+            <span class="brand-name">Heron Deterrent</span>
         </div>
         <div class="topbar-status">
             <div class="status-pill">
@@ -1072,12 +1157,12 @@
                 <div class="stat-value blue" id="stat-triage">—</div>
                 <div class="stat-sub">waiting for a label</div>
             </div>
-            <div class="stat-card" title="Motion triggers no model looked at: night (IR/dark) and dawn/dusk transitions. Not detections — nothing was identified.">
+            <div class="stat-card secondary" title="Motion triggers no model looked at: night (IR/dark) and dawn/dusk transitions. Not detections — nothing was identified.">
                 <div class="stat-label">Motion · Unclassified</div>
                 <div class="stat-value purple" id="stat-motion">—</div>
                 <div class="stat-sub" id="stat-motion-sub">no model ran</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card secondary">
                 <div class="stat-label">Model Detections</div>
                 <div class="stat-value" id="stat-total">—</div>
                 <div class="stat-sub" id="stat-alerts-sub">all time · model ran</div>
@@ -1119,7 +1204,8 @@
                                 title="Recorded while the frame type was establishing or switching, or before frame types were recorded">Unsettled <span data-count="unknown"></span></button>
                     </div>
                     <span class="toolbar-gap"></span>
-                    <label><input type="checkbox" id="sel-all" onchange="selectAllShown(this.checked)"> Select all shown</label>
+                    <div class="sel-controls" id="sel-controls">
+                    <label><input type="checkbox" id="sel-all" onchange="selectAllShown(this.checked)"> <span class="long">Select all shown</span><span class="short">All</span></label>
                     <span id="sel-count">0 selected</span>
                     <button class="btn btn-primary btn-sm" id="btn-bulk" onclick="bulkNoHeron()" disabled
                             title="File each selected clip's thumbnail frame as a 'no heron' training example, in its own day/IR/dark set">
@@ -1128,6 +1214,7 @@
                     <button class="btn btn-subtle btn-sm" id="btn-undo-bulk" onclick="undoBulk()" hidden
                             title="Delete the files the last bulk label wrote and put its clips back here">
                         Undo last <kbd>U</kbd></button>
+                    </div>
                     <span class="new-pill" id="triage-new" hidden onclick="showHeldNew()"></span>
                 </div>
                 <div class="triage-body" id="unclass-list">
@@ -1139,7 +1226,7 @@
         <aside class="col-side">
 
             <!-- Live stream -->
-            <div class="card">
+            <div class="card" id="live-card">
                 <div class="card-header">
                     <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-video"/></svg> Live Feed</span>
                     <span class="badge" id="badge-live">LOADING</span>
@@ -1147,7 +1234,7 @@
                 <div class="card-body tight">
                     <div class="stream-wrap">
                         <img id="live-stream" src="/api/live-stream" alt="Live camera feed"
-                             onerror="this.parentElement.querySelector('.stream-overlay .stream-label').textContent='No signal'">
+                             onerror="if (this.dataset.paused !== '1') this.parentElement.querySelector('.stream-overlay .stream-label').textContent='No signal'">
                         <div class="stream-overlay">
                             <span class="live-badge">LIVE</span>
                             <span class="stream-label" id="stream-status">Streaming</span>
@@ -1164,7 +1251,7 @@
             <div class="card side-line" id="herons-none"><svg class="ic" aria-hidden="true"><use href="#i-heron"/></svg> No herons detected yet</div>
 
             <!-- Recent alerts, grouped: identical consecutive alerts are one row -->
-            <div class="card">
+            <div class="card" id="alerts-card">
                 <div class="card-header">
                     <span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg> Recent Alerts</span>
                     <span class="badge" id="badge-alerts">0</span>
@@ -1175,7 +1262,7 @@
             </div>
 
             <!-- Tools: needed occasionally, so out of the way -->
-            <details class="card tools">
+            <details class="card tools" id="tools-card">
                 <summary class="card-header"><span class="card-title"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg> Tools — test video upload</span></summary>
                 <div class="card-body">
                     <div class="drop-zone" onclick="document.getElementById('video-upload').click()">
@@ -1354,8 +1441,43 @@
     const SETTLED = ['day', 'ir', 'dark'];
     let ftFilter = '';   // '' = all; 'unknown' = no settled frame type
 
-    setInterval(updateAll, 5000);
+    // Poll only while someone can see the page. A phone left on the
+    // dashboard in a pocket, or a background tab, would otherwise keep
+    // asking the Pi for lists and thumbnails every 5 s; coming back
+    // refreshes at once.
+    setInterval(() => { if (!document.hidden) updateAll(); }, 5000);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) updateAll();
+        syncLiveStream();
+    });
     updateAll();
+
+    // The live feed costs the Pi a JPEG encode per frame per viewer, for as
+    // long as the stream is open. Close it when the feed is scrolled out
+    // of sight (the usual case on a phone, where it is last) or the page is
+    // hidden; reopen it when it is seen again.
+    const liveImg = document.getElementById('live-stream');
+    let liveInView = true;
+    function syncLiveStream() {
+        const want = liveInView && !document.hidden;
+        const on = liveImg.dataset.paused !== '1';
+        if (want === on) return;
+        if (want) {
+            liveImg.dataset.paused = '0';
+            liveImg.src = '/api/live-stream?t=' + Date.now();
+            document.getElementById('stream-status').textContent = 'Streaming';
+        } else {
+            liveImg.dataset.paused = '1';
+            liveImg.removeAttribute('src');
+            document.getElementById('stream-status').textContent = 'Paused — out of view';
+        }
+    }
+    if ('IntersectionObserver' in window) {
+        new IntersectionObserver(entries => {
+            liveInView = entries[entries.length - 1].isIntersecting;
+            syncLiveStream();
+        }).observe(liveImg);
+    }
 
     async function updateAll() {
         await Promise.allSettled([
@@ -1724,6 +1846,7 @@
 
     function updateSelectionUi() {
         const n = triage.selected.size;
+        document.body.classList.toggle('has-selection', n > 0);
         document.getElementById('sel-count').textContent = `${n} selected`;
         document.getElementById('btn-bulk').disabled = n === 0;
         const all = document.getElementById('sel-all');

@@ -906,13 +906,26 @@ there will be hundreds of clips to look at and, mostly, no herons. A Herons
 panel appears above it only when there are herons; otherwise that is one line.
 Everything you glance at sits in a narrow side column.
 
+**Dense on a desktop, glanceable on a phone.** Under 700 px wide the columns
+dissolve into one list ordered for a glance: status, three numbers (herons
+today, last heron, to triage), herons, the latest alerts — then triage, three
+tiles across, then the live feed and tools. Selecting tiles brings up an action
+bar at the bottom of the screen (thumb reach); the labeller takes the whole
+screen with the frame at full width. Touch screens get no keyboard hints, and
+each tile shows its Label button without hover.
+
+The page is self-contained: icons are an inline SVG sprite, fonts are the
+system's, and nothing is fetched from another host
+(`tests/test_dashboard_page.py` checks). Transitions are short and turn off
+under the system's reduced-motion setting.
+
 | Section | Description |
 |---|---|
 | Mode pill | Day / IR night / Dark night / establishing / switching; model or motion-only; deterrent armed or silent. Hover for live chroma/luma |
 | Stats strip | Herons today, last heron, **to triage**, unclassified motion, model detections. Motion is never counted as a detection |
 | Herons | Only when there are any: history with confidence, and the clips (thumbnail as poster). Never filtered |
 | To Triage | A contact sheet — see below |
-| Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection. Test Speaker plays through the running service |
+| Live Feed | MJPEG stream, throttled to 2 fps so it cannot starve detection, and **closed while nobody can see it** — scrolled out of view or the tab in the background — because every open stream is a JPEG encode per frame on the Pi. Test Speaker plays through the running service |
 | Recent Alerts | Identical consecutive alerts are one row with a count and time span; expand for each one's thumbnail and whether it has been labelled. A 0.00 confidence is never shown |
 | Tools | Collapsed: test video upload — the quickest end-to-end proof |
 
@@ -944,6 +957,9 @@ high as 0.894. Select clips (click; shift-click a range; a group's checkbox;
   clips back — sparing any clip you have relabelled by hand since. It
   survives a service restart.
 - "Heron" is never a bulk label: a heron needs a box drawn by hand.
+
+The page also stops its 5-second refresh while the tab is hidden (a phone in a
+pocket), and refreshes at once when it is shown again.
 
 Keys on the sheet: arrows move, `Space` selects, `Enter` opens the labeller,
 `A` all, `N` no heron, `U` undo, `Esc` clears. While you have a selection, new
