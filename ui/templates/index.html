@@ -1578,7 +1578,7 @@
         // is spelled out: 'motion' means no model ran at all.
         const kind = d.label === 'motion' ? 'motion' : '';
         // A model confidence is only information when a model produced one.
-        const conf = d.confidence > 0 ? `${kind ? ' · ' : ''}${(d.confidence * 100).toFixed(0)}%` : '';
+        const conf = d.confidence > 0 ? `${kind ? ' · ' : ''}${(d.confidence * 100).toFixed(1)}%` : '';
         const badge = SETTLED.includes(d.frame_type) ? ftBadge(d.frame_type)
             : `<span class="ft-badge ft-unsettled">${d.frame_type === 'establishing' ? 'start'
                 : d.frame_type === 'switching' ? 'switch' : escHtml(d.frame_type || 'legacy')}</span>`;
@@ -2367,17 +2367,18 @@
     // how many key frames would have fired the deterrent had one of them been
     // the live trigger frame (uploads never fire it).
     function uploadSummary(d) {
-        const pct = x => (x * 100).toFixed(0) + '%';
+        // Three places: 0.946 must not read as "0.95" beside a 0.95 threshold.
+        const num = x => x.toFixed(3);
         const scores = d.scores.map(x => {
             const c = x >= d.alert_threshold ? 'var(--red)' : x >= d.deter_threshold ? 'var(--yellow)' : 'inherit';
-            return `<strong style="color:${c}">${x.toFixed(2)}</strong>`;
+            return `<strong style="color:${c}">${num(x)}</strong>`;
         }).join(' ');
         const size = d.source_size && d.size && d.source_size[0] !== d.size[0]
             ? `${d.size[0]}×${d.size[1]} (from ${d.source_size[0]}×${d.source_size[1]})`
             : d.size ? `${d.size[0]}×${d.size[1]}` : '';
         return [
             `<div><strong style="color:var(--text)">${d.label === 'heron'
-                ? 'Heron — alert raised' : 'No alert'}</strong> · best key frame ${pct(d.confidence)}</div>`,
+                ? 'Heron — alert raised' : 'No alert'}</strong> · best key frame ${num(d.confidence)}</div>`,
             `<div>Key frames: ${scores}</div>`,
             `<div>Alert needs ${d.needed} of ${d.scores.length} at ≥ ${d.alert_threshold}: got <strong>${d.votes}</strong></div>`,
             `<div>Deterrent fires on one live trigger frame ≥ ${d.deter_threshold}: `
